@@ -7,10 +7,6 @@ local Players = game:GetService("Players")
 local UIS = game:GetService("UserInputService")
 local WS = game:GetService("Workspace")
 local RS = game:GetService("ReplicatedStorage")
-local inputOk, VirtualInputManager = pcall(function()
-    return game:GetService("VirtualInputManager")
-end)
-if not inputOk then VirtualInputManager = nil end
 
 local player = Players.LocalPlayer
 local gui = player:WaitForChild("PlayerGui")
@@ -104,12 +100,16 @@ local deepScanCooldown = 5
 local rareFirstOn = true
 local trainingX2On = false
 local trainingBusy = false
-local trainingDelay = 0.8
-local trainingClaimedCount = 0
+local trainingDelay = 0.25
+local trainingSentCount = 0
 local trainingFailedCount = 0
-local trainingLastArgs = nil
+local trainingPendingToken = nil
 local trainingLastSpawnAt = 0
-local trainingLastRemoteAttempt = 0
+local trainingAttempts = {}
+local trainingSentTokens = {}
+local trainingBonusRemote = nil
+local trainingBonusConnection = nil
+local trainingLoopGeneration = 0
 local preTeleportDelay = 3.5
 local collectBusy = false
 local safeCFrame = nil
@@ -620,259 +620,94 @@ end
 
 local function updateTrainingStatus()
     if trainingStatusLbl then
-        trainingStatusLbl.Text = string.format("Claimed: %d  |  Failed: %d", trainingClaimedCount, trainingFailedCount)
+        trainingStatusLbl.Text = string.format("Sent: %d  |  Failed: %d", trainingSentCount, trainingFailedCount)
         trainingStatusLbl.TextColor3 = trainingX2On and UI.green or UI.muted
     end
 end
 
-local function isVisibleGuiObject(obj)
-    local node = obj
-    while node and node ~= gui do
-        if node:IsA("GuiObject") and node.Visible == false then
-            return false
-        end
-        node = node.Parent
+local hookTrainingBonusRemote
+local function claimTrainingX2(automatic)
+    if automatic and not trainingX2On then return false end
+    local token = trainingPendingToken
+    if trainingBusy or not runtime.active then return false end
+    if type(token) ~= "string" or token == "" then
+        trainingStatus("Waiting for the next x2 bonus", UI.muted)
+        return false
     end
-    return true
-end
-
-local function guiObjectText(root)
-    local out = {}
-    table.insert(out, cleanText(root.Name))
-    if root:IsA("TextButton") or root:IsA("TextLabel") or root:IsA("TextBox") then
-        table.insert(out, cleanText(root.Text))
+    if trainingSentTokens[token] then
+        trainingPendingToken = nil
+        return false
     end
-    if root:IsA("ImageButton") or root:IsA("ImageLabel") then
-        table.insert(out, cleanText(root.Image))
-    end
-    for _, d in ipairs(root:GetDescendants()) do
-        table.insert(out, cleanText(d.Name))
-        if d:IsA("TextButton") or d:IsA("TextLabel") or d:IsA("TextBox") then
-            table.insert(out, cleanText(d.Text))
-        end
-        if d:IsA("ImageButton") or d:IsA("ImageLabel") then
-            table.insert(out, cleanText(d.Image))
-        end
-    end
-    return table.concat(out, " "):lower()
-end
-
-local function isTrainingX2Button(obj)
-    if not obj:IsA("GuiButton") then return false end
-    if mainGui and obj:IsDescendantOf(mainGui) then return false end
-    if not isVisibleGuiObject(obj) then return false end
-
-    local text = guiObjectText(obj)
-    if text:find("x2", 1, true) or text:find("2x", 1, true) or text:find("×2", 1, true) then
-        if text:find("train", 1, true) or text:find("power", 1, true) or text:find("strength", 1, true) or #text <= 10 then
-            return true
-        end
-    end
-
-    local parentText = obj.Parent and guiObjectText(obj.Parent) or ""
-    return parentText:find("x2", 1, true) ~= nil
-        and (parentText:find("train", 1, true) ~= nil or parentText:find("power", 1, true) ~= nil or parentText:find("strength", 1, true) ~= nil)
-end
-
-local function hasTrainingX2Signal(text)
-    if text == "" then return false end
-    local hasX2 = text:find("x2", 1, true) ~= nil
-        or text:find("2x", 1, true) ~= nil
-        or text:find("x 2", 1, true) ~= nil
-    if not hasX2 then return false end
-
-    return text:find("train", 1, true) ~= nil
-        or text:find("power", 1, true) ~= nil
-        or text:find("strength", 1, true) ~= nil
-        or text:find("bonus", 1, true) ~= nil
-        or #text <= 80
-end
-
-local function isTrainingX2Object(obj)
-    if not obj:IsA("GuiObject") then return false end
-    if mainGui and obj:IsDescendantOf(mainGui) then return false end
-    if not isVisibleGuiObject(obj) then return false end
-
-    local text = guiObjectText(obj)
-    if hasTrainingX2Signal(text) then
-        return true
-    end
-
-    local parentText = obj.Parent and guiObjectText(obj.Parent) or ""
-    return hasTrainingX2Signal(parentText)
-end
-
-local function getClickTarget(obj)
-    local node = obj
-    while node and node ~= gui do
-        if node:IsA("GuiButton") and isVisibleGuiObject(node) then
-            return node
-        end
-        node = node.Parent
-    end
-    return obj
-end
-
-local function clickScreenPoint(x, y)
-    x = math.floor(x)
-    y = math.floor(y)
-
-    pcall(function()
-        VirtualInputManager:SendMouseButtonEvent(x, y, 0, true, game, 0)
-        task.wait(0.05)
-        VirtualInputManager:SendMouseButtonEvent(x, y, 0, false, game, 0)
-    end)
-
-    pcall(function()
-        VirtualInputManager:SendTouchEvent(1, Enum.UserInputState.Begin, x, y)
-        task.wait(0.05)
-        VirtualInputManager:SendTouchEvent(1, Enum.UserInputState.End, x, y)
-    end)
-
-    return true
-end
-
-local function clickTrainingX2Button()
-    local best = nil
-    local bestScore = -1
-    for _, obj in ipairs(gui:GetDescendants()) do
-        if isTrainingX2Object(obj) or isTrainingX2Button(obj) then
-            local target = getClickTarget(obj)
-            local size = target.AbsoluteSize
-            if size.X > 0 and size.Y > 0 then
-                local text = guiObjectText(obj)
-                local score = 10
-                if target:IsA("GuiButton") then score = score + 30 end
-                if text:find("train", 1, true) then score = score + 10 end
-                if text:find("power", 1, true) or text:find("strength", 1, true) then score = score + 10 end
-                score = score + math.min(size.X * size.Y / 1000, 25)
-                if score > bestScore then
-                    best = target
-                    bestScore = score
-                end
-            end
-        end
-    end
-
-    if not best then
-        local camera = WS.CurrentCamera
-        local viewport = camera and camera.ViewportSize
-        if viewport then
-            local points = {
-                { 0.69, 0.41 },
-                { 0.55, 0.38 },
-                { 0.33, 0.38 },
-                { 0.50, 0.38 },
-            }
-            for _, point in ipairs(points) do
-                clickScreenPoint(viewport.X * point[1], viewport.Y * point[2])
-                task.wait(0.08)
-            end
-            return true
-        end
+    if os.clock() - trainingLastSpawnAt > 8 then
+        trainingPendingToken = nil
+        trainingStatus("x2 bonus expired; waiting for the next one", UI.muted)
         return false
     end
 
-    local pos = best.AbsolutePosition
-    local size = best.AbsoluteSize
-    if size.X <= 0 or size.Y <= 0 then
-        return false
-    end
-
-    local x = pos.X + size.X / 2
-    local y = pos.Y + size.Y / 2
-    if best:IsA("GuiButton") then
-        pcall(function()
-            best:Activate()
-        end)
-    end
-    clickScreenPoint(x, y)
-    return true
-end
-
-local function invokeClaimBonus()
     local claim = findTrainingRemote("ClaimBonus", "RemoteFunction")
     if not claim then
+        trainingStatus("ClaimBonus remote not found", UI.red)
         return false
     end
 
-    local unpackArgs = table.unpack or unpack
-    if trainingLastArgs and #trainingLastArgs > 0 then
-        local ok, result = pcall(function()
-            return claim:InvokeServer(unpackArgs(trainingLastArgs))
-        end)
-        if ok and result ~= false then
-            return true
-        end
-    end
-
+    trainingBusy = true
     local ok, result = pcall(function()
-        return claim:InvokeServer()
+        return claim:InvokeServer(token)
     end)
+    trainingBusy = false
+    if not runtime.active then return false end
+
     if ok and result ~= false then
+        trainingSentTokens[token] = true
+        if trainingPendingToken == token then trainingPendingToken = nil end
+        trainingSentCount = trainingSentCount + 1
+        updateTrainingStatus()
+        trainingStatus("Training x2 claim sent", UI.green)
         return true
     end
 
-    local bonusNames = { "x2", "X2", "2x", "Power", "Strength", "Training" }
-    for _, name in ipairs(bonusNames) do
-        ok, result = pcall(function()
-            return claim:InvokeServer(name)
-        end)
-        if ok and result ~= false then
-            return true
-        end
+    trainingAttempts[token] = (trainingAttempts[token] or 0) + 1
+    if trainingAttempts[token] >= 3 then
+        if trainingPendingToken == token then trainingPendingToken = nil end
+        trainingFailedCount = trainingFailedCount + 1
+        updateTrainingStatus()
+        trainingStatus("Training x2 claim failed", UI.red)
+        warn("[VANTA V2] ClaimBonus failed:", result)
     end
-
     return false
 end
 
-local function claimTrainingX2()
-    if trainingBusy then return false end
-    trainingBusy = true
-
-    local ok = clickTrainingX2Button()
-    local shouldTryRemote = trainingLastArgs ~= nil or os.clock() - trainingLastRemoteAttempt >= 1.5
-    if not ok and shouldTryRemote then
-        trainingLastRemoteAttempt = os.clock()
-        ok = invokeClaimBonus()
-    end
-
-    if ok then
-        trainingClaimedCount = trainingClaimedCount + 1
-        trainingStatus("Training x2 claimed", UI.green)
-    elseif trainingLastArgs ~= nil or os.clock() - trainingLastSpawnAt < 2 then
-        trainingFailedCount = trainingFailedCount + 1
-        updateTrainingStatus()
-    end
-
-    trainingBusy = false
-    return ok
-end
-
 local function trainingX2Loop()
+    trainingLoopGeneration = trainingLoopGeneration + 1
+    local generation = trainingLoopGeneration
     task.spawn(function()
-        while runtime.active and trainingX2On do
-            claimTrainingX2()
+        while runtime.active and trainingX2On and generation == trainingLoopGeneration do
+            if not trainingBonusRemote or not trainingBonusRemote.Parent then
+                hookTrainingBonusRemote()
+            end
+            if trainingPendingToken then claimTrainingX2(true) end
             task.wait(trainingDelay)
         end
     end)
 end
 
-local function hookTrainingBonusRemote()
+hookTrainingBonusRemote = function()
+    if trainingBonusRemote and trainingBonusRemote.Parent then return true end
     local spawnBonus = findTrainingRemote("SpawnBonus", "RemoteEvent")
-    if not spawnBonus then
-        return false
-    end
+    if not spawnBonus then return false end
+    if trainingBonusConnection then trainingBonusConnection:Disconnect() end
 
-    local connection = spawnBonus.OnClientEvent:Connect(function(...)
-        trainingLastArgs = { ... }
+    trainingBonusRemote = spawnBonus
+    trainingBonusConnection = spawnBonus.OnClientEvent:Connect(function(token)
+        if not runtime.active or type(token) ~= "string" or token == "" then return end
+        if trainingSentTokens[token] then return end
+        trainingPendingToken = token
         trainingLastSpawnAt = os.clock()
-        if runtime.active and trainingX2On then
-            task.defer(claimTrainingX2)
+        if trainingX2On then
+            task.defer(function() claimTrainingX2(true) end)
         end
     end)
-    table.insert(runtime.connections, connection)
-
+    table.insert(runtime.connections, trainingBonusConnection)
     return true
 end
 
@@ -1765,19 +1600,6 @@ trainingStatusLbl.Parent = trainingSection
 trainingBtn = mkBtn(trainingSection, "AUTO TRAIN X2: OFF", UI.amber, 0, 104, 154)
 local trainingOnceBtn = mkBtn(trainingSection, "CLAIM X2 NOW", UI.cyan, 166, 104, 154)
 
-local trainingHelp = Instance.new("TextLabel")
-trainingHelp.Size = UDim2.new(1, 0, 0, 92)
-trainingHelp.Position = UDim2.new(0, 0, 0, 154)
-trainingHelp.BackgroundTransparency = 1
-trainingHelp.Text = "Uses TrainingService ClaimBonus from the dump and also clicks the visible x2 bonus button when it appears on your screen."
-trainingHelp.TextColor3 = UI.muted
-trainingHelp.Font = Enum.Font.Gotham
-trainingHelp.TextSize = 11
-trainingHelp.TextWrapped = true
-trainingHelp.TextYAlignment = Enum.TextYAlignment.Top
-trainingHelp.TextXAlignment = Enum.TextXAlignment.Left
-trainingHelp.Parent = trainingSection
-
 safeLbl = Instance.new("TextLabel")
 safeLbl.Size = UDim2.new(1, 0, 0, 36)
 safeLbl.Position = UDim2.new(0, 0, 0, 48)
@@ -1885,9 +1707,10 @@ trainingBtn.MouseButton1Click:Connect(function()
     updateTrainingButton()
     updateTrainingStatus()
     if trainingX2On then
-        trainingStatus("Auto training x2 running", UI.green)
+        trainingStatus("Waiting for next x2 bonus", UI.green)
         trainingX2Loop()
     else
+        trainingLoopGeneration = trainingLoopGeneration + 1
         trainingStatus("Auto training x2 stopped", UI.muted)
     end
 end)
