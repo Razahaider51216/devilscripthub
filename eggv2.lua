@@ -7,10 +7,6 @@ local Players = game:GetService("Players")
 local UIS = game:GetService("UserInputService")
 local WS = game:GetService("Workspace")
 local RS = game:GetService("ReplicatedStorage")
-local virtualInputManager
-pcall(function()
-    virtualInputManager = game:GetService("VirtualInputManager")
-end)
 
 local player = Players.LocalPlayer
 local gui = player:WaitForChild("PlayerGui")
@@ -654,52 +650,42 @@ local function trainingPowerText()
     return node and node:IsA("TextLabel") and cleanText(node.Text) or "unavailable"
 end
 
+local function trainingBonusText()
+    local node = gui
+    for _, name in ipairs({ "SpeedEffect", "LeftContainer", "Currency", "Speed", "x2SpeedFrame", "SpeedLabel", "SpeedLabel" }) do
+        node = node and node:FindFirstChild(name)
+    end
+    return node and node:IsA("TextLabel") and cleanText(node.Text) or "unavailable"
+end
+
 local function pressTrainingX2Button(button)
-    local activated = false
-    local activation = button.Activated:Connect(function() activated = true end)
-    local mouseClick = button.MouseButton1Click:Connect(function() activated = true end)
-    local p = button.AbsolutePosition + button.AbsoluteSize / 2
-    local x, y = math.floor(p.X), math.floor(p.Y)
-    local restorePanel = panel and panel.Visible
-    if restorePanel then
-        panel.Visible = false
-        task.wait()
+    if type(firesignal) == "function" then
+        local ok, err = pcall(firesignal, button.Activated, nil, 1)
+        if ok then return true, "firesignal" end
+        warn("[VANTA V2] x2 Activated firesignal failed:", err)
     end
-
-    if virtualInputManager then
-        pcall(function()
-            virtualInputManager:SendTouchEvent(1, Enum.UserInputState.Begin, x, y)
-            task.wait(0.06)
-            virtualInputManager:SendTouchEvent(1, Enum.UserInputState.End, x, y)
-        end)
-        task.wait(0.12)
-        if not activated then
-            pcall(function()
-                virtualInputManager:SendMouseButtonEvent(x, y, 0, true, game, 0)
-                task.wait(0.06)
-                virtualInputManager:SendMouseButtonEvent(x, y, 0, false, game, 0)
-            end)
-            task.wait(0.12)
+    if type(getconnections) == "function" then
+        local ok, connections = pcall(getconnections, button.Activated)
+        if ok and type(connections) == "table" then
+            local fired = false
+            for _, connection in ipairs(connections) do
+                if connection.Enabled ~= false then
+                    local called = pcall(function()
+                        if type(connection.Fire) == "function" then
+                            connection:Fire(nil, 1)
+                        elseif type(connection.Function) == "function" then
+                            connection.Function(nil, 1)
+                        else
+                            error("connection cannot be fired")
+                        end
+                    end)
+                    fired = fired or called
+                end
+            end
+            if fired then return true, "getconnections" end
         end
     end
-
-    if not activated then
-        local ok, virtualInput = pcall(function() return UIS:CreateVirtualInput() end)
-        if ok and virtualInput then
-            pcall(function()
-                local position = Vector2.new(x, y)
-                virtualInput:SendMouseButton(position, Enum.UserInputType.MouseButton1, true, 0)
-                task.wait(0.06)
-                virtualInput:SendMouseButton(position, Enum.UserInputType.MouseButton1, false, 0)
-            end)
-            task.wait(0.12)
-        end
-    end
-
-    activation:Disconnect()
-    mouseClick:Disconnect()
-    if restorePanel and panel and panel.Parent then panel.Visible = true end
-    return activated
+    return false, "executor cannot activate the x2 button signal"
 end
 
 local hookTrainingBonusRemote
@@ -726,49 +712,29 @@ local function claimTrainingX2(automatic)
     local button = findTrainingX2Button()
     if button then
         local beforePower = trainingPowerText()
+        local beforeBonus = trainingBonusText()
         trainingBusy = true
-        local clicked = pressTrainingX2Button(button)
+        local clicked, method = pressTrainingX2Button(button)
         trainingBusy = false
         if clicked then
             local afterPower = trainingPowerText()
+            local afterBonus = trainingBonusText()
             trainingSentTokens[token] = true
             if trainingPendingToken == token then trainingPendingToken = nil end
             trainingSentCount = trainingSentCount + 1
             updateTrainingStatus()
-            trainingStatus("x2 button activated; checking Power", UI.amber)
-            warn("[VANTA V2] x2 button activated:", token, "Power:", beforePower, "->", afterPower)
+            trainingStatus("x2 signal sent; verify Power gain", UI.amber)
+            warn("[VANTA V2] x2 signal sent:", method, token, "Base:", beforePower, "->", afterPower, "Bonus:", beforeBonus, "->", afterBonus)
             task.delay(0.6, function()
                 if runtime.active then
-                    warn("[VANTA V2] x2 Power after 0.6s:", trainingPowerText())
+                    warn("[VANTA V2] x2 after 0.6s: Base:", trainingPowerText(), "Bonus:", trainingBonusText())
                 end
             end)
             return true
         end
+        trainingStatus(method, UI.red)
     elseif automatic and bonusAge < 1.5 then
         return false
-    end
-
-    local claim = findTrainingRemote("ClaimBonus", "RemoteFunction")
-    if not claim then
-        trainingStatus("ClaimBonus remote not found", UI.red)
-        return false
-    end
-
-    trainingBusy = true
-    local ok, result = pcall(function()
-        return claim:InvokeServer(token)
-    end)
-    warn("[VANTA V2] ClaimBonus fallback:", token, "call ok:", ok, "result:", result)
-    trainingBusy = false
-    if not runtime.active then return false end
-
-    if ok and result ~= false then
-        trainingSentTokens[token] = true
-        if trainingPendingToken == token then trainingPendingToken = nil end
-        trainingSentCount = trainingSentCount + 1
-        updateTrainingStatus()
-        trainingStatus("Training x2 claim sent", UI.green)
-        return true
     end
 
     trainingAttempts[token] = (trainingAttempts[token] or 0) + 1
@@ -776,8 +742,7 @@ local function claimTrainingX2(automatic)
         if trainingPendingToken == token then trainingPendingToken = nil end
         trainingFailedCount = trainingFailedCount + 1
         updateTrainingStatus()
-        trainingStatus("Training x2 claim failed", UI.red)
-        warn("[VANTA V2] ClaimBonus failed:", result)
+        trainingStatus("Cannot activate x2; check executor signal support", UI.red)
     end
     return false
 end
