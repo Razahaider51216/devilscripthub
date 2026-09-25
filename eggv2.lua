@@ -24,6 +24,12 @@ local RARITY_OPTIONS = {}
 local KNOWN_RARITIES = {}
 local TARGET_RARITIES = {}
 local RARITY_PRIORITY = {}
+local EGG_NAME_OPTIONS = {}
+local EGG_NAME_LABELS = {}
+local TARGET_EGG_NAMES = {}
+local MUTATION_OPTIONS = {}
+local KNOWN_MUTATIONS = {}
+local TARGET_MUTATIONS = {}
 
 local MAP_RARITIES = {
     "Common", "Uncommon", "Rare", "Epic", "Legendary",
@@ -134,6 +140,8 @@ local rarityButtons = {}
 local selectedSummaryLbl
 local rarityListFrame
 local rebuildRarityButtons
+local filterMode = "Rarity"
+local filterModeButtons = {}
 local mainGui
 local panel
 
@@ -232,52 +240,59 @@ local function updateCountLabel()
 end
 
 local function selectedRarityText()
-    local out = {}
+    local counts = { 0, 0, 0 }
     for _, rarity in ipairs(RARITY_OPTIONS) do
-        if TARGET_RARITIES[rarity] then
-            table.insert(out, rarity)
-        end
+        if TARGET_RARITIES[rarity] then counts[1] = counts[1] + 1 end
     end
-    if #out == 0 then
-        return "Selected: none"
+    for _, name in ipairs(EGG_NAME_OPTIONS) do
+        if TARGET_EGG_NAMES[name] then counts[2] = counts[2] + 1 end
     end
-    return "Selected: " .. table.concat(out, ", ")
+    for _, mutation in ipairs(MUTATION_OPTIONS) do
+        if TARGET_MUTATIONS[mutation] then counts[3] = counts[3] + 1 end
+    end
+    return string.format("Selected: %d rarities | %d eggs | %d mutations", counts[1], counts[2], counts[3])
 end
 
-local function hasSelectedRarity()
-    for _, rarity in ipairs(RARITY_OPTIONS) do
-        if TARGET_RARITIES[rarity] == true then
-            return true
-        end
-    end
+local function hasSelectedFilter()
+    for _, selected in pairs(TARGET_RARITIES) do if selected then return true end end
+    for _, selected in pairs(TARGET_EGG_NAMES) do if selected then return true end end
+    for _, selected in pairs(TARGET_MUTATIONS) do if selected then return true end end
     return false
 end
 
-local function selectedMinPriority()
-    local minPriority = nil
-    for _, rarity in ipairs(RARITY_OPTIONS) do
-        if TARGET_RARITIES[rarity] then
-            local priority = RARITY_PRIORITY[rarity] or 0
-            minPriority = minPriority and math.min(minPriority, priority) or priority
-        end
+local function categoryMatches(selected, value)
+    local any = false
+    for _, active in pairs(selected) do
+        if active then any = true break end
     end
-    return minPriority
+    return not any or selected[value] == true
 end
 
-local function rarityPassesFilter(rarity)
-    return TARGET_RARITIES[rarity] == true
+local function rarityPassesFilter(rarity, eggType, mutation)
+    return hasSelectedFilter()
+        and categoryMatches(TARGET_RARITIES, rarity)
+        and categoryMatches(TARGET_EGG_NAMES, eggType)
+        and categoryMatches(TARGET_MUTATIONS, mutation)
 end
 
 local function updateRarityButtons()
-    for rarity, btn in pairs(rarityButtons) do
-        local active = TARGET_RARITIES[rarity] == true
-        btn.Text = (active and "[ON] " or "[OFF] ") .. rarity
+    local selected = filterMode == "Rarity" and TARGET_RARITIES
+        or filterMode == "Egg Names" and TARGET_EGG_NAMES or TARGET_MUTATIONS
+    for key, btn in pairs(rarityButtons) do
+        local active = selected[key] == true
+        local label = filterMode == "Egg Names" and (EGG_NAME_LABELS[key] or key) or key
+        btn.Text = (active and "[ON] " or "[OFF] ") .. label
         btn.TextColor3 = active and UI.text or UI.muted
         btn.BackgroundColor3 = active and Color3.fromRGB(44, 101, 94) or UI.button
     end
     if selectedSummaryLbl then
         selectedSummaryLbl.Text = selectedRarityText()
-        selectedSummaryLbl.TextColor3 = selectedMinPriority() == nil and UI.red or UI.muted
+        selectedSummaryLbl.TextColor3 = hasSelectedFilter() and UI.muted or UI.amber
+    end
+    for mode, btn in pairs(filterModeButtons) do
+        local active = mode == filterMode
+        btn.BackgroundColor3 = active and Color3.fromRGB(44, 101, 94) or UI.button
+        btn.TextColor3 = active and UI.text or UI.muted
     end
     if rarerModeBtn then
         rarerModeBtn.Text = rareFirstOn and "RARE FIRST ON" or "RARE FIRST OFF"
@@ -386,6 +401,9 @@ end
 local function resolveInfo(inst)
     local rarity = getTextRarity(inst) or getRarityAttr(inst)
     local displayName = getTextDisplayName(inst) or getAttr(inst, "DisplayName", "EggType") or inst.Name
+    local eggType = getAttr(inst, "EggType") or inst.Name
+    local mutation = getAttr(inst, "Mutation")
+    mutation = mutation and mutation:upper() or "Normal"
     local kg = getAttr(inst, "Kg", "Weight", "Mass")
     local biome = getAttr(inst, "Biome") or ""
 
@@ -403,7 +421,30 @@ local function resolveInfo(inst)
     else
         rarity = "Unknown"
     end
-    return rarity, displayName, kg, biome
+
+    if isSpawnedEgg(inst) then
+        local label = displayName
+        if mutation ~= "Normal" and label:sub(1, #mutation):upper() == mutation then
+            label = cleanText(label:sub(#mutation + 1))
+        end
+        if not EGG_NAME_LABELS[eggType] then
+            EGG_NAME_LABELS[eggType] = label ~= "" and label or eggType
+            table.insert(EGG_NAME_OPTIONS, eggType)
+            table.sort(EGG_NAME_OPTIONS, function(a, b)
+                return EGG_NAME_LABELS[a]:lower() < EGG_NAME_LABELS[b]:lower()
+            end)
+            TARGET_EGG_NAMES[eggType] = false
+        elseif EGG_NAME_LABELS[eggType] == eggType and label ~= eggType and label ~= "" then
+            EGG_NAME_LABELS[eggType] = label
+        end
+        if not KNOWN_MUTATIONS[mutation] then
+            KNOWN_MUTATIONS[mutation] = true
+            TARGET_MUTATIONS[mutation] = false
+            table.insert(MUTATION_OPTIONS, mutation)
+            table.sort(MUTATION_OPTIONS)
+        end
+    end
+    return rarity, displayName, kg, biome, eggType, mutation
 end
 
 local function hasTruthyAttr(inst, ...)
@@ -483,8 +524,8 @@ end
 local function isTargetEgg(inst)
     if not isSpawnedEgg(inst) then return false end
     if isCollectedOrStoredEgg(inst) then return false end
-    local rarity = resolveInfo(inst)
-    return rarityPassesFilter(rarity)
+    local rarity, _, _, _, eggType, mutation = resolveInfo(inst)
+    return rarityPassesFilter(rarity, eggType, mutation)
 end
 
 local function formatWeight(kg)
@@ -540,7 +581,7 @@ local function getTargets()
 end
 
 local function discoverMapRarities()
-    local before = #RARITY_OPTIONS
+    local before = #RARITY_OPTIONS + #EGG_NAME_OPTIONS + #MUTATION_OPTIONS
     local spawnedItems = WS:FindFirstChild("SpawnedItems")
 
     for _, inst in ipairs(spawnedItems and spawnedItems:GetChildren() or {}) do
@@ -553,12 +594,13 @@ local function discoverMapRarities()
         addRarityOption("Unknown", false)
     end
 
-    if rebuildRarityButtons and #RARITY_OPTIONS ~= before then
+    local changed = #RARITY_OPTIONS + #EGG_NAME_OPTIONS + #MUTATION_OPTIONS ~= before
+    if rebuildRarityButtons and changed then
         rebuildRarityButtons()
     end
     updateRarityButtons()
 
-    return #RARITY_OPTIONS ~= before
+    return changed
 end
 
 local function isPickupPrompt(prompt)
@@ -891,7 +933,7 @@ local function deepScanForTarget(force)
 end
 
 collectEgg = function(egg)
-    if not runtime.active or not hasSelectedRarity() or collectBusy or not egg or not egg.Parent or not isTargetEgg(egg) then return false end
+    if not runtime.active or not hasSelectedFilter() or collectBusy or not egg or not egg.Parent or not isTargetEgg(egg) then return false end
     collectBusy = true
 
     local rarity, name, kg = resolveInfo(egg)
@@ -979,8 +1021,8 @@ collectEgg = function(egg)
 end
 
 local function collectBest()
-    if not runtime.active or not hasSelectedRarity() then
-        setStatus("Waiting for a selected rarity", UI.muted)
+    if not runtime.active or not hasSelectedFilter() then
+        setStatus("Waiting for an egg filter", UI.muted)
         return false
     end
     local targets = getTargets()
@@ -990,7 +1032,7 @@ local function collectBest()
             return collectEgg(item.inst)
         end
     end
-    setStatus("No fresh selected egg (" .. selectedRarityText() .. ")", UI.muted)
+    setStatus("No fresh egg matching filters", UI.muted)
     return false
 end
 
@@ -1321,7 +1363,7 @@ local function mkSection(name)
 end
 
 local collectorSection = mkSection("Collector")
-local raritySection = mkSection("Rarity")
+local raritySection = mkSection("Filters")
 local trainingSection = mkSection("Training")
 local safeSection = mkSection("Safe Zone")
 local visualSection = mkSection("Visual")
@@ -1369,7 +1411,7 @@ local function mkTab(name, y)
 end
 
 mkTab("Collector", 10)
-mkTab("Rarity", 50)
+mkTab("Filters", 50)
 mkTab("Training", 90)
 mkTab("Safe Zone", 130)
 mkTab("Visual", 170)
@@ -1416,15 +1458,15 @@ local function mkBtn(parent, text, color, x, y, w)
     return btn
 end
 
-mkHeader(collectorSection, "Auto Collector", "Collect selected rarity eggs only")
-mkHeader(raritySection, "Rarity Select", "Choose which egg rarities Auto Collector can pick")
+mkHeader(collectorSection, "Auto Collector", "Collect eggs matching the selected filters")
+mkHeader(raritySection, "Egg Filters", "Selections in different groups must all match")
 mkHeader(trainingSection, "Training x2", "Auto claim the x2 training bonus when it appears")
 mkHeader(safeSection, "Safe Zone", "Return point after every pickup")
 mkHeader(visualSection, "Visual", "Target ESP and scan tools")
 
 selectedSummaryLbl = Instance.new("TextLabel")
-selectedSummaryLbl.Size = UDim2.new(1, 0, 0, 36)
-selectedSummaryLbl.Position = UDim2.new(0, 0, 0, 42)
+selectedSummaryLbl.Size = UDim2.new(1, 0, 0, 26)
+selectedSummaryLbl.Position = UDim2.new(0, 0, 0, 84)
 selectedSummaryLbl.BackgroundTransparency = 1
 selectedSummaryLbl.Text = selectedRarityText()
 selectedSummaryLbl.TextColor3 = UI.muted
@@ -1436,21 +1478,32 @@ selectedSummaryLbl.TextYAlignment = Enum.TextYAlignment.Top
 selectedSummaryLbl.Parent = raritySection
 
 rarityListFrame = Instance.new("ScrollingFrame")
-rarityListFrame.Size = UDim2.new(1, 0, 0, 194)
-rarityListFrame.Position = UDim2.new(0, 0, 0, 82)
+rarityListFrame.Size = UDim2.new(1, 0, 0, 166)
+rarityListFrame.Position = UDim2.new(0, 0, 0, 116)
 rarityListFrame.BackgroundTransparency = 1
 rarityListFrame.BorderSizePixel = 0
 rarityListFrame.ScrollBarThickness = 3
+rarityListFrame.ScrollingDirection = Enum.ScrollingDirection.Y
 rarityListFrame.CanvasSize = UDim2.new(0, 0, 0, 0)
 rarityListFrame.Parent = raritySection
 
-local function mkRarityButton(rarity, index)
-    local col = (index - 1) % 2
-    local row = math.floor((index - 1) / 2)
-    local btn = mkBtn(rarityListFrame, rarity, rarityColor(rarity), col * 166, row * 38, 154)
-    rarityButtons[rarity] = btn
+local function currentFilterOptions()
+    if filterMode == "Egg Names" then return EGG_NAME_OPTIONS, TARGET_EGG_NAMES end
+    if filterMode == "Mutations" then return MUTATION_OPTIONS, TARGET_MUTATIONS end
+    return RARITY_OPTIONS, TARGET_RARITIES
+end
+
+local function mkRarityButton(key, index)
+    local singleColumn = filterMode == "Egg Names"
+    local col = singleColumn and 0 or (index - 1) % 2
+    local row = singleColumn and index - 1 or math.floor((index - 1) / 2)
+    local label = filterMode == "Egg Names" and (EGG_NAME_LABELS[key] or key) or key
+    local btn = mkBtn(rarityListFrame, label, filterMode == "Rarity" and rarityColor(key) or UI.text, col * 166, row * 38, singleColumn and 320 or 154)
+    btn.TextTruncate = Enum.TextTruncate.AtEnd
+    rarityButtons[key] = btn
     btn.MouseButton1Click:Connect(function()
-        TARGET_RARITIES[rarity] = not TARGET_RARITIES[rarity]
+        local _, selected = currentFilterOptions()
+        selected[key] = not selected[key]
         processed = {}
         getTargets()
         if espOn then
@@ -1458,7 +1511,7 @@ local function mkRarityButton(rarity, index)
             scanESP()
         end
         updateRarityButtons()
-        setStatus("Rarity filter updated", UI.cyan)
+        setStatus("Egg filters updated", UI.cyan)
     end)
     return btn
 end
@@ -1469,13 +1522,14 @@ rebuildRarityButtons = function()
     end
     rarityButtons = {}
 
-    for i, rarity in ipairs(RARITY_OPTIONS) do
-        mkRarityButton(rarity, i)
+    local options = currentFilterOptions()
+    for i, key in ipairs(options) do
+        mkRarityButton(key, i)
     end
 
     if rarityListFrame then
-        local rows = math.ceil(#RARITY_OPTIONS / 2)
-        rarityListFrame.CanvasSize = UDim2.new(0, 0, 0, math.max(194, rows * 38))
+        local rows = filterMode == "Egg Names" and #options or math.ceil(#options / 2)
+        rarityListFrame.CanvasSize = UDim2.new(0, 0, 0, math.max(166, rows * 38))
     end
 
     updateRarityButtons()
@@ -1483,15 +1537,30 @@ end
 
 rebuildRarityButtons()
 
+local selectRareBtn
+for i, mode in ipairs({ "Rarity", "Egg Names", "Mutations" }) do
+    local btn = mkBtn(raritySection, mode, UI.muted, (i - 1) * 108, 44, 100)
+    filterModeButtons[mode] = btn
+    btn.MouseButton1Click:Connect(function()
+        filterMode = mode
+        rarityListFrame.CanvasPosition = Vector2.zero
+        rebuildRarityButtons()
+        selectRareBtn.Visible = mode == "Rarity"
+        rarerModeBtn.Visible = mode == "Rarity"
+    end)
+end
+updateRarityButtons()
+
 local selectAllBtn = mkBtn(raritySection, "ALL", UI.green, 0, 286, 78)
-local selectRareBtn = mkBtn(raritySection, "HIGH", UI.amber, 84, 286, 78)
+selectRareBtn = mkBtn(raritySection, "HIGH", UI.amber, 84, 286, 78)
 rarerModeBtn = mkBtn(raritySection, "RARE FIRST ON", UI.muted, 168, 286, 102)
 local clearRarityBtn = mkBtn(raritySection, "CLEAR", UI.red, 276, 286, 78)
 
 selectAllBtn.MouseButton1Click:Connect(function()
     discoverMapRarities()
-    for _, rarity in ipairs(RARITY_OPTIONS) do
-        TARGET_RARITIES[rarity] = true
+    local options, selected = currentFilterOptions()
+    for _, key in ipairs(options) do
+        selected[key] = true
     end
     processed = {}
     getTargets()
@@ -1500,7 +1569,7 @@ selectAllBtn.MouseButton1Click:Connect(function()
         scanESP()
     end
     updateRarityButtons()
-    setStatus("Selected all rarity eggs", UI.green)
+    setStatus("Selected all visible " .. filterMode, UI.green)
 end)
 
 selectRareBtn.MouseButton1Click:Connect(function()
@@ -1539,8 +1608,9 @@ end)
 
 clearRarityBtn.MouseButton1Click:Connect(function()
     discoverMapRarities()
-    for _, rarity in ipairs(RARITY_OPTIONS) do
-        TARGET_RARITIES[rarity] = false
+    local options, selected = currentFilterOptions()
+    for _, key in ipairs(options) do
+        selected[key] = false
     end
     processed = {}
     getTargets()
@@ -1549,7 +1619,7 @@ clearRarityBtn.MouseButton1Click:Connect(function()
         scanESP()
     end
     updateRarityButtons()
-    setStatus("Rarity selection cleared", UI.red)
+    setStatus("Cleared " .. filterMode, UI.red)
 end)
 
 statusLbl = Instance.new("TextLabel")
@@ -1741,7 +1811,7 @@ autoBtn.MouseButton1Click:Connect(function()
     autoOn = not autoOn
     updateAutoButton()
     if autoOn then
-        setStatus(hasSelectedRarity() and "Auto collector running" or "Waiting for a selected rarity", hasSelectedRarity() and UI.green or UI.amber)
+        setStatus(hasSelectedFilter() and "Auto collector running" or "Waiting for an egg filter", hasSelectedFilter() and UI.green or UI.amber)
         autoLoop()
     else
         setStatus("Auto collector stopped", UI.muted)
@@ -1838,15 +1908,17 @@ local descendantConnection = WS.DescendantAdded:Connect(function(inst)
     end
     if not eggInst or not isSpawnedEgg(eggInst) then return end
 
-    local previousCount = #RARITY_OPTIONS
+    local previousCount = #RARITY_OPTIONS + #EGG_NAME_OPTIONS + #MUTATION_OPTIONS
     resolveInfo(eggInst)
-    if rebuildRarityButtons and #RARITY_OPTIONS ~= previousCount then
+    if rebuildRarityButtons and #RARITY_OPTIONS + #EGG_NAME_OPTIONS + #MUTATION_OPTIONS ~= previousCount then
         rebuildRarityButtons()
+    elseif filterMode == "Egg Names" then
+        updateRarityButtons()
     end
     if espOn and isTargetEgg(eggInst) then
         attachESP(eggInst)
     end
-    if autoOn and hasSelectedRarity() and not collectBusy and isTargetEgg(eggInst) then
+    if autoOn and hasSelectedFilter() and not collectBusy and isTargetEgg(eggInst) then
         collectBest()
     end
 end)
@@ -1885,6 +1957,6 @@ hookTrainingBonusRemote()
 if legacyAutoRunning then
     setStatus("Another egg auto is still ON. Turn it OFF in its GUI or rejoin.", UI.red)
 elseif scanOk and targetsOk then
-    setStatus("Waiting for a selected rarity", UI.muted)
+    setStatus("Waiting for an egg filter", UI.muted)
 end
-warn("[VANTA V2] GUI ready in PlayerGui. Select a rarity and enable Auto Collect.")
+warn("[VANTA V2] GUI ready in PlayerGui. Select egg filters and enable Auto Collect.")
