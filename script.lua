@@ -22,6 +22,7 @@ local events = {}
 local trackedButtons = {}
 local trackedRemotes = {}
 local incomingConnections = {}
+local powerLabels = {}
 local MAX_EVENTS = 260
 
 local function pathOf(inst)
@@ -170,9 +171,20 @@ local function watchRemote(inst)
     end
 end
 
+local function watchPowerLabel(inst)
+    if powerLabels[inst] or not inst:IsA("TextLabel") or inst.Name ~= "SpeedLabel" then return end
+    if not pathOf(inst):find('["SpeedEffect"]', 1, true) then return end
+    powerLabels[inst] = true
+    log("POWER_TEXT", pathOf(inst) .. " text=" .. valueText(inst.Text))
+    table.insert(runtime.connections, inst:GetPropertyChangedSignal("Text"):Connect(function()
+        log("POWER_TEXT", pathOf(inst) .. " text=" .. valueText(inst.Text))
+    end))
+end
+
 local function scan()
     for _, inst in ipairs(playerGui:GetDescendants()) do
         if inst:IsA("GuiButton") then watchButton(inst, false) end
+        watchPowerLabel(inst)
     end
     for _, inst in ipairs(game:GetDescendants()) do
         if relevantRemote(inst) then watchRemote(inst) end
@@ -205,6 +217,9 @@ local function snapshot(lines)
     end
     table.insert(lines, string.format("-- Bonus labels/images: %d (showing up to 60)", #bonusTexts))
     for i = 1, math.min(#bonusTexts, 60) do table.insert(lines, "-- BONUS_UI " .. bonusTexts[i]) end
+    for label in pairs(powerLabels) do
+        if label.Parent then table.insert(lines, "-- POWER_TEXT " .. pathOf(label) .. " text=" .. valueText(label.Text)) end
+    end
 
     table.insert(lines, "")
     table.insert(lines, "--[[ TRAINING REMOTES ]]")
@@ -298,6 +313,7 @@ pcall(function()
 end)
 
 table.insert(runtime.connections, playerGui.DescendantAdded:Connect(function(inst)
+    watchPowerLabel(inst)
     if inst:IsA("GuiButton") then
         task.defer(function()
             if runtime.active and inst.Parent then watchButton(inst, true) end
@@ -344,6 +360,11 @@ if type(hookmetamethod) == "function" and type(getnamecallmethod) == "function" 
                 if method == "FireServer" or method == "InvokeServer"
                     or method == "Fire" or method == "Invoke" then
                     log("REMOTE_OUT", method .. " " .. pathOf(self) .. " args=" .. argsText(...))
+                end
+                if method == "InvokeServer" or method == "Invoke" then
+                    local resultValues = table.pack(oldNamecall(self, ...))
+                    log("REMOTE_RETURN", pathOf(self) .. " result=" .. argsText(table.unpack(resultValues, 1, resultValues.n)))
+                    return table.unpack(resultValues, 1, resultValues.n)
                 end
             end
             return oldNamecall(self, ...)

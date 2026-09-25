@@ -7,6 +7,10 @@ local Players = game:GetService("Players")
 local UIS = game:GetService("UserInputService")
 local WS = game:GetService("Workspace")
 local RS = game:GetService("ReplicatedStorage")
+local virtualInputManager
+pcall(function()
+    virtualInputManager = game:GetService("VirtualInputManager")
+end)
 
 local player = Players.LocalPlayer
 local gui = player:WaitForChild("PlayerGui")
@@ -135,6 +139,7 @@ local selectedSummaryLbl
 local rarityListFrame
 local rebuildRarityButtons
 local mainGui
+local panel
 
 local function getCharacterRoot()
     local char = player.Character
@@ -620,9 +625,81 @@ end
 
 local function updateTrainingStatus()
     if trainingStatusLbl then
-        trainingStatusLbl.Text = string.format("Sent: %d  |  Failed: %d", trainingSentCount, trainingFailedCount)
+        trainingStatusLbl.Text = string.format("Tried: %d  |  Failed: %d", trainingSentCount, trainingFailedCount)
         trainingStatusLbl.TextColor3 = trainingX2On and UI.green or UI.muted
     end
+end
+
+local function findTrainingX2Button()
+    local node = gui
+    for _, name in ipairs({ "SpeedEffect", "LeftContainer", "Currency", "Speed", "x2Speed", "Button" }) do
+        node = node and node:FindFirstChild(name)
+    end
+    if not node or not node:IsA("GuiButton") then return nil end
+    local ancestor = node
+    while ancestor and ancestor ~= gui do
+        if ancestor:IsA("GuiObject") and not ancestor.Visible then return nil end
+        if ancestor:IsA("ScreenGui") and not ancestor.Enabled then return nil end
+        ancestor = ancestor.Parent
+    end
+    if node.AbsoluteSize.X <= 0 or node.AbsoluteSize.Y <= 0 then return nil end
+    return node
+end
+
+local function trainingPowerText()
+    local node = gui
+    for _, name in ipairs({ "SpeedEffect", "LeftContainer", "Currency", "Speed", "SpeedFrame", "SpeedLabel", "SpeedLabel" }) do
+        node = node and node:FindFirstChild(name)
+    end
+    return node and node:IsA("TextLabel") and cleanText(node.Text) or "unavailable"
+end
+
+local function pressTrainingX2Button(button)
+    local activated = false
+    local activation = button.Activated:Connect(function() activated = true end)
+    local mouseClick = button.MouseButton1Click:Connect(function() activated = true end)
+    local p = button.AbsolutePosition + button.AbsoluteSize / 2
+    local x, y = math.floor(p.X), math.floor(p.Y)
+    local restorePanel = panel and panel.Visible
+    if restorePanel then
+        panel.Visible = false
+        task.wait()
+    end
+
+    if virtualInputManager then
+        pcall(function()
+            virtualInputManager:SendTouchEvent(1, Enum.UserInputState.Begin, x, y)
+            task.wait(0.06)
+            virtualInputManager:SendTouchEvent(1, Enum.UserInputState.End, x, y)
+        end)
+        task.wait(0.12)
+        if not activated then
+            pcall(function()
+                virtualInputManager:SendMouseButtonEvent(x, y, 0, true, game, 0)
+                task.wait(0.06)
+                virtualInputManager:SendMouseButtonEvent(x, y, 0, false, game, 0)
+            end)
+            task.wait(0.12)
+        end
+    end
+
+    if not activated then
+        local ok, virtualInput = pcall(function() return UIS:CreateVirtualInput() end)
+        if ok and virtualInput then
+            pcall(function()
+                local position = Vector2.new(x, y)
+                virtualInput:SendMouseButton(position, Enum.UserInputType.MouseButton1, true, 0)
+                task.wait(0.06)
+                virtualInput:SendMouseButton(position, Enum.UserInputType.MouseButton1, false, 0)
+            end)
+            task.wait(0.12)
+        end
+    end
+
+    activation:Disconnect()
+    mouseClick:Disconnect()
+    if restorePanel and panel and panel.Parent then panel.Visible = true end
+    return activated
 end
 
 local hookTrainingBonusRemote
@@ -644,6 +721,33 @@ local function claimTrainingX2(automatic)
         return false
     end
 
+    local bonusAge = os.clock() - trainingLastSpawnAt
+    if automatic and bonusAge < 0.45 then return false end
+    local button = findTrainingX2Button()
+    if button then
+        local beforePower = trainingPowerText()
+        trainingBusy = true
+        local clicked = pressTrainingX2Button(button)
+        trainingBusy = false
+        if clicked then
+            local afterPower = trainingPowerText()
+            trainingSentTokens[token] = true
+            if trainingPendingToken == token then trainingPendingToken = nil end
+            trainingSentCount = trainingSentCount + 1
+            updateTrainingStatus()
+            trainingStatus("x2 button activated; checking Power", UI.amber)
+            warn("[VANTA V2] x2 button activated:", token, "Power:", beforePower, "->", afterPower)
+            task.delay(0.6, function()
+                if runtime.active then
+                    warn("[VANTA V2] x2 Power after 0.6s:", trainingPowerText())
+                end
+            end)
+            return true
+        end
+    elseif automatic and bonusAge < 1.5 then
+        return false
+    end
+
     local claim = findTrainingRemote("ClaimBonus", "RemoteFunction")
     if not claim then
         trainingStatus("ClaimBonus remote not found", UI.red)
@@ -654,6 +758,7 @@ local function claimTrainingX2(automatic)
     local ok, result = pcall(function()
         return claim:InvokeServer(token)
     end)
+    warn("[VANTA V2] ClaimBonus fallback:", token, "call ok:", ok, "result:", result)
     trainingBusy = false
     if not runtime.active then return false end
 
@@ -1089,7 +1194,7 @@ local iconStroke = Instance.new("UIStroke", iconBtn)
 iconStroke.Color = UI.cyan
 iconStroke.Thickness = 1.7
 
-local panel = Instance.new("Frame")
+panel = Instance.new("Frame")
 panel.Size = UDim2.new(0, 560, 0, 410)
 panel.AnchorPoint = Vector2.new(0.5, 0.5)
 panel.Position = UDim2.fromScale(0.5, 0.5)
