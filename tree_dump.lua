@@ -6,7 +6,6 @@ local WS = game:GetService("Workspace")
 local Lighting = game:GetService("Lighting")
 local ProximityPromptService = game:GetService("ProximityPromptService")
 local TextChatService = game:GetService("TextChatService")
-local UIS = game:GetService("UserInputService")
 local player = Players.LocalPlayer
 local playerGui = player and player:WaitForChild("PlayerGui", 10)
 if not playerGui then warn("[TreeDump] PlayerGui not found"); return end
@@ -20,7 +19,6 @@ local started = os.date("%Y-%m-%d %H:%M:%S")
 local events, remoteList = {}, {}
 local watchedRemotes, watchedButtons, watchedLabels, watchedModels = {}, {}, {}, {}
 local watchedModelCount = 0
-local actionUntil = 0
 local MAX_EVENTS = 1200
 
 local keywords = {
@@ -29,9 +27,23 @@ local keywords = {
     "buy", "purchase", "shop", "harvest", "sell", "claim", "risk", "timer",
 }
 
+local remoteKeywords = {
+    "tree", "seed", "sapling", "plant", "grow", "garden", "farm", "plot",
+    "lightning", "thunder", "strike", "storm", "weather", "harvest",
+    "buy", "purchase",
+}
+
 local function relevant(text)
     text = tostring(text or ""):lower()
     for _, word in ipairs(keywords) do
+        if text:find(word, 1, true) then return true end
+    end
+    return false
+end
+
+local function relevantRemote(text)
+    text = tostring(text or ""):lower()
+    for _, word in ipairs(remoteKeywords) do
         if text:find(word, 1, true) then return true end
     end
     return false
@@ -142,26 +154,19 @@ end
 
 local function watchButton(inst)
     if watchedButtons[inst] or not inst:IsA("GuiButton") then return end
+    if not relevant(guiText(inst)) then return end
     watchedButtons[inst] = true
     table.insert(runtime.connections, inst.Activated:Connect(function()
-        local text = guiText(inst)
-        if relevant(text) then
-            actionUntil = os.clock() + 5
-            log("BUTTON", pathOf(inst) .. " text=" .. valueText(text))
-        end
+        log("BUTTON", pathOf(inst) .. " text=" .. valueText(guiText(inst)))
     end))
 end
 
 local function watchLabel(inst)
     if watchedLabels[inst] or not (inst:IsA("TextLabel") or inst:IsA("TextButton")) then return end
+    if not relevant(inst.Name .. " " .. inst.Text) then return end
     watchedLabels[inst] = true
-    local wasRelevant = relevant(inst.Name .. " " .. inst.Text)
     table.insert(runtime.connections, inst:GetPropertyChangedSignal("Text"):Connect(function()
-        local nowRelevant = relevant(inst.Name .. " " .. inst.Text)
-        if wasRelevant or nowRelevant then
-            log("UI_TEXT", pathOf(inst) .. " text=" .. valueText(inst.Text))
-        end
-        wasRelevant = nowRelevant
+        log("UI_TEXT", pathOf(inst) .. " text=" .. valueText(inst.Text))
     end))
 end
 
@@ -171,35 +176,34 @@ local function watchRemote(remote)
     if not remote:IsDescendantOf(RS) then return end
     watchedRemotes[remote] = true
     table.insert(remoteList, remote.ClassName .. " " .. pathOf(remote))
-    if remote:IsA("RemoteEvent") then
+    if remote:IsA("RemoteEvent") and relevantRemote(pathOf(remote)) then
         table.insert(runtime.connections, remote.OnClientEvent:Connect(function(...)
-            local payload = argsText(...)
-            if relevant(remote.Name) or relevant(payload) or os.clock() < actionUntil then
-                log("REMOTE_IN", pathOf(remote) .. " args=" .. payload)
-            end
+            local ok, payload = pcall(argsText, ...)
+            if ok then log("REMOTE_IN", pathOf(remote) .. " args=" .. payload) end
         end))
     end
 end
 
-for _, inst in ipairs(RS:GetDescendants()) do watchRemote(inst) end
-for _, inst in ipairs(playerGui:GetDescendants()) do
-    if inst:IsA("GuiButton") then watchButton(inst) end
-    watchLabel(inst)
-end
-for _, inst in ipairs(WS:GetDescendants()) do watchModel(inst) end
 table.insert(runtime.connections, RS.DescendantAdded:Connect(watchRemote))
 table.insert(runtime.connections, playerGui.DescendantAdded:Connect(function(inst)
-    if inst:IsA("GuiButton") then watchButton(inst) end
-    watchLabel(inst)
+    task.defer(function()
+        if not runtime.active or not inst.Parent then return end
+        if inst:IsA("GuiButton") then watchButton(inst) end
+        watchLabel(inst)
+    end)
 end))
 table.insert(runtime.connections, WS.DescendantAdded:Connect(function(inst)
-    if isTreeLike(inst) then
-        watchModel(inst)
-        log("TREE_ADDED", pathOf(inst) .. " pos=" .. positionOf(inst) .. " attrs=" .. attributes(inst))
-    elseif inst.Name:lower():find("lightning", 1, true) or inst.Name:lower():find("thunder", 1, true) then
-        local position = inst:IsA("BasePart") and valueText(inst.Position) or "unknown"
-        log("LIGHTNING_OBJECT", pathOf(inst) .. " pos=" .. position)
-    end
+    if not relevantRemote(inst.Name) then return end
+    task.defer(function()
+        if not runtime.active or not inst.Parent then return end
+        if isTreeLike(inst) then
+            watchModel(inst)
+            log("TREE_ADDED", pathOf(inst) .. " pos=" .. positionOf(inst) .. " attrs=" .. attributes(inst))
+        elseif inst.Name:lower():find("lightning", 1, true) or inst.Name:lower():find("thunder", 1, true) then
+            local position = inst:IsA("BasePart") and valueText(inst.Position) or "unknown"
+            log("LIGHTNING_OBJECT", pathOf(inst) .. " pos=" .. position)
+        end
+    end)
 end))
 table.insert(runtime.connections, WS.DescendantRemoving:Connect(function(inst)
     if watchedModels[inst] then
@@ -210,41 +214,34 @@ table.insert(runtime.connections, WS.DescendantRemoving:Connect(function(inst)
 end))
 table.insert(runtime.connections, ProximityPromptService.PromptTriggered:Connect(function(prompt, who)
     if who and who ~= player then return end
-    actionUntil = os.clock() + 5
     log("PROMPT", pathOf(prompt) .. " action=" .. valueText(prompt.ActionText) .. " object=" .. valueText(prompt.ObjectText))
 end))
-table.insert(runtime.connections, UIS.InputBegan:Connect(function(input)
-    if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
-        actionUntil = os.clock() + 2
-    end
-end))
 
-local hookInstalled = false
-if type(hookmetamethod) == "function" and type(getnamecallmethod) == "function" then
-    local oldNamecall
-    local wrap = type(newcclosure) == "function" and newcclosure or function(fn) return fn end
-    local ok, result = pcall(function()
-        return hookmetamethod(game, "__namecall", wrap(function(self, ...)
-            if runtime.active and watchedRemotes[self] then
-                local method = getnamecallmethod()
-                if method == "FireServer" or method == "InvokeServer" then
-                    local payload = argsText(...)
-                    local keep = relevant(self.Name) or relevant(payload) or os.clock() < actionUntil
-                    if keep then log("REMOTE_OUT", method .. " " .. pathOf(self) .. " args=" .. payload) end
-                    if method == "InvokeServer" then
-                        local values = table.pack(oldNamecall(self, ...))
-                        if keep or relevant(argsText(table.unpack(values, 1, values.n))) then
-                            log("REMOTE_RETURN", pathOf(self) .. " result=" .. argsText(table.unpack(values, 1, values.n)))
-                        end
-                        return table.unpack(values, 1, values.n)
-                    end
-                end
-            end
-            return oldNamecall(self, ...)
-        end))
-    end)
-    if ok then oldNamecall = result; hookInstalled = true else warn("[TreeDump] Outgoing hook failed:", result) end
-end
+task.spawn(function()
+    local descendants = RS:GetDescendants()
+    for i, inst in ipairs(descendants) do
+        if not runtime.active then return end
+        watchRemote(inst)
+        if i % 150 == 0 then task.wait() end
+    end
+end)
+task.spawn(function()
+    local descendants = playerGui:GetDescendants()
+    for i, inst in ipairs(descendants) do
+        if not runtime.active then return end
+        if inst:IsA("GuiButton") then watchButton(inst) end
+        watchLabel(inst)
+        if i % 150 == 0 then task.wait() end
+    end
+end)
+task.spawn(function()
+    local descendants = WS:GetDescendants()
+    for i, inst in ipairs(descendants) do
+        if not runtime.active then return end
+        if relevantRemote(inst.Name) then watchModel(inst) end
+        if i % 150 == 0 then task.wait() end
+    end
+end)
 
 local function snapshot(lines)
     table.insert(lines, "--[[ ENVIRONMENT ]]")
@@ -300,7 +297,7 @@ local function copyDump()
         "-- Tree and Lightning Diagnostic Dump",
         "-- Started: " .. started,
         "-- Copied: " .. os.date("%Y-%m-%d %H:%M:%S"),
-        "-- Outgoing hook: " .. tostring(hookInstalled),
+        "-- Passive mode: no outgoing hook",
         "-- PlaceId: " .. tostring(game.PlaceId),
         "",
     }
@@ -352,4 +349,4 @@ pcall(function()
     table.insert(runtime.connections, chatCommand.Triggered:Connect(function() command("/dimp") end))
 end)
 
-log("READY", "Buy and plant a tree, then observe growth and lightning; /dimp copies the dump. Hook=" .. tostring(hookInstalled))
+log("READY", "Passive mode. Buy and plant a tree, then observe growth and lightning; /dimp copies the dump.")
