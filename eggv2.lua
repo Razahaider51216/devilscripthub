@@ -120,7 +120,6 @@ local autoSeaOn = false
 local seaBusy = false
 local seaLastAttempt = 0
 local seaLoopGeneration = 0
-local seaStartRemote = nil
 local preTeleportDelay = 3.5
 local collectBusy = false
 local safeCFrame = nil
@@ -631,11 +630,11 @@ findPickupPrompt = function(egg)
     return nil
 end
 
-local function findServiceRemote(serviceName, remoteName, className)
+local function findTrainingRemote(remoteName, className)
     local direct = RS:FindFirstChild("Packages")
     if direct then
         local ok, found = pcall(function()
-            return RS["Packages"]["_Index"]["sleitnick_knit@1.7.0"]["knit"]["Services"][serviceName][className == "RemoteEvent" and "RE" or "RF"][remoteName]
+            return RS["Packages"]["_Index"]["sleitnick_knit@1.7.0"]["knit"]["Services"]["TrainingService"][className == "RemoteEvent" and "RE" or "RF"][remoteName]
         end)
         if ok and found and found:IsA(className) then
             return found
@@ -645,17 +644,13 @@ local function findServiceRemote(serviceName, remoteName, className)
     for _, d in ipairs(RS:GetDescendants()) do
         if d.Name == remoteName and d:IsA(className) then
             local full = d:GetFullName()
-            if full:find(serviceName, 1, true) then
+            if full:find("TrainingService", 1, true) then
                 return d
             end
         end
     end
 
     return nil
-end
-
-local function findTrainingRemote(remoteName, className)
-    return findServiceRemote("TrainingService", remoteName, className)
 end
 
 local function seaStatus(text, color)
@@ -684,26 +679,114 @@ local function openSeaOnce()
     end
     if os.clock() - seaLastAttempt < 4 then return false end
 
-    if not seaStartRemote or not seaStartRemote.Parent then
-        seaStartRemote = findServiceRemote("WaveService", "Start", "RemoteFunction")
-    end
-    if not seaStartRemote then
-        seaStatus("WaveService.Start not found", UI.red)
+    local button = gui:FindFirstChild("SeaStaffActionButton", true)
+    if not button or not button:IsA("GuiButton") or not button.Visible or button.AbsoluteSize.X <= 0 then
+        seaStatus("Sea Staff button not ready", UI.amber)
         return false
     end
 
     seaBusy = true
     seaLastAttempt = os.clock()
-    seaStatus("Opening sea: perfect charge", UI.cyan)
-    local ok, result = pcall(function()
-        return seaStartRemote:InvokeServer(5)
+    seaStatus("Holding Sea Staff charge", UI.cyan)
+    local point = button.AbsolutePosition + button.AbsoluteSize / 2
+    local drivers = {}
+    pcall(function()
+        local virtualInput = UIS:CreateVirtualInput()
+        if virtualInput then
+            drivers[#drivers + 1] = {
+                name = "VirtualInput",
+                send = function(down)
+                    virtualInput:SendMouseButton(point, Enum.UserInputType.MouseButton1, down, 0)
+                end,
+            }
+        end
     end)
-    seaBusy = false
-    if ok and type(result) == "table" and tonumber(result.extension) == 5 then
-        seaStatus("Perfect charge: +5s", UI.green)
-        return true
+    pcall(function()
+        local manager = game:GetService("VirtualInputManager")
+        if manager then
+            drivers[#drivers + 1] = {
+                name = "VirtualInputManager",
+                send = function(down)
+                    manager:SendMouseButtonEvent(point.X, point.Y, 0, down, game, 0)
+                end,
+            }
+        end
+    end)
+    if type(firesignal) == "function" or type(getconnections) == "function" then
+        local function sendSignal(signal, ...)
+            if type(firesignal) == "function" then
+                firesignal(signal, ...)
+                return
+            end
+            for _, connection in ipairs(getconnections(signal)) do
+                if type(connection.Fire) == "function" then
+                    connection:Fire(...)
+                elseif type(connection.Function) == "function" then
+                    connection.Function(...)
+                end
+            end
+        end
+        drivers[#drivers + 1] = {
+            name = "Button signals",
+            send = function(down)
+                if down then
+                    sendSignal(button.MouseButton1Down, point.X, point.Y)
+                else
+                    sendSignal(button.MouseButton1Up, point.X, point.Y)
+                    sendSignal(button.Activated, nil, 1)
+                end
+            end,
+        }
     end
-    seaStatus(ok and "Open Sea not confirmed" or ("Open Sea failed: " .. tostring(result)), UI.red)
+
+    local panelWasVisible = panel and panel.Visible
+    if panelWasVisible then panel.Visible = false end
+    local charged, usedDriver = false, nil
+    for _, driver in ipairs(drivers) do
+        local pressed, pressError = pcall(driver.send, true)
+        if pressed then
+            local deadline = os.clock() + 2
+            while runtime.active and os.clock() < deadline do
+                local chargeBar = gui:FindFirstChild("ChargeBar", true)
+                local openTime = chargeBar and chargeBar:FindFirstChild("OpenTime", true)
+                if openTime and openTime:IsA("TextLabel") and openTime.Text:find("+5s Open Time", 1, true) then
+                    charged = true
+                    usedDriver = driver.name
+                    break
+                end
+                task.wait(0.03)
+            end
+            local released, releaseError = pcall(driver.send, false)
+            if not released then
+                warn("[VANTA V2] Sea input release failed:", driver.name, releaseError)
+            end
+            if charged then break end
+        else
+            warn("[VANTA V2] Sea input press failed:", driver.name, pressError)
+        end
+    end
+    if panelWasVisible and panel and panel.Parent and runtime.active then panel.Visible = true end
+
+    if charged then
+        local deadline = os.clock() + 3
+        while runtime.active and os.clock() < deadline do
+            if player:GetAttribute("IsWaveActive") == true then
+                seaBusy = false
+                seaStatus("Perfect charge: wave active", UI.green)
+                warn("[VANTA V2] Open Sea confirmed via", usedDriver)
+                return true
+            end
+            task.wait(0.1)
+        end
+    end
+    seaBusy = false
+    if #drivers == 0 then
+        seaStatus("Executor cannot send button input", UI.red)
+    elseif charged then
+        seaStatus("Charged +5s, but wave did not open", UI.red)
+    else
+        seaStatus("Sea Staff hold did not charge", UI.red)
+    end
     return false
 end
 
@@ -1014,6 +1097,7 @@ collectEgg = function(egg)
     end
     local pickedThisTrip = 0
     local failedThisTrip = false
+    local unverifiedThisTrip = false
     local current = egg
     local firstPickup = true
     local movedToEgg = false
@@ -1079,9 +1163,8 @@ collectEgg = function(egg)
             end
         end
         if not confirmed then
-            failedThisTrip = true
-            failedCount = failedCount + 1
-            setStatus("Pickup not confirmed: " .. tostring(name), UI.red)
+            unverifiedThisTrip = true
+            setStatus("Pickup sent; checking after safe return", UI.amber)
             break
         end
 
@@ -1101,7 +1184,9 @@ collectEgg = function(egg)
     end
 
     local returned = not movedToEgg or returnToSafe()
-    if pickedThisTrip > 0 then
+    if unverifiedThisTrip then
+        setStatus(returned and "Pickup sent; verify carried egg" or "Pickup sent; safe return failed", UI.amber)
+    elseif pickedThisTrip > 0 then
         setStatus(string.format(returned and "Returned safe with %d/%d selected eggs" or "Safe return failed; carrying %d/%d eggs",
             pickedThisTrip, carryTarget), returned and UI.green or UI.red)
     elseif failedThisTrip then
@@ -1109,7 +1194,7 @@ collectEgg = function(egg)
     end
     updateCountLabel()
     collectBusy = false
-    return pickedThisTrip > 0
+    return pickedThisTrip > 0 or unverifiedThisTrip
 end
 
 local function collectBest()
@@ -1128,11 +1213,23 @@ local function collectBest()
     return false
 end
 
+runtime.collectBest = function()
+    local ok, result = pcall(collectBest)
+    if not ok then
+        collectBusy = false
+        returnToSafe()
+        warn("[VANTA V2] Collector error:", result)
+        setStatus("Collector error: " .. tostring(result), UI.red)
+        return false
+    end
+    return result
+end
+
 local function autoLoop()
     task.spawn(function()
         while runtime.active and autoOn do
             if not collectBusy then
-                collectBest()
+                runtime.collectBest()
             end
             task.wait(autoDelay)
         end
@@ -2021,7 +2118,7 @@ end)
 
 onceBtn.MouseButton1Click:Connect(function()
     if not collectBusy then
-        collectBest()
+        runtime.collectBest()
     end
 end)
 
@@ -2132,7 +2229,7 @@ local descendantConnection = WS.DescendantAdded:Connect(function(inst)
         attachESP(eggInst)
     end
     if autoOn and hasSelectedFilter() and not collectBusy and isTargetEgg(eggInst) then
-        collectBest()
+        runtime.collectBest()
     end
 end)
 table.insert(runtime.connections, descendantConnection)
