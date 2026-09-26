@@ -145,7 +145,7 @@ local function chooseQuest()
     local best, bestLevel
     for id, config in pairs(questData) do
         if type(config) == "table" and type(config.EnemyType) == "string"
-            and meetsQuestLevel(config) and (state.rejectedQuests[id] or 0) <= os.clock() then
+            and meetsQuestLevel(config) then
             local npc = findNpc(id)
             local mob = nearestEnemy(config.EnemyType)
             if npc and mob then
@@ -356,6 +356,18 @@ local function refreshGameState()
     state.lastRefresh = os.clock()
 end
 
+local function waitForQuest(id, checks, delay)
+    for _ = 1, checks do
+        task.wait(delay)
+        local ok, quests = invoke(rf.getQuests)
+        if ok and type(quests) == "table" then
+            state.questStates = quests
+            if quests[id] and quests[id].Ongoing == true then return true end
+        end
+    end
+    return false
+end
+
 local function manageQuest()
     local id, config, info = activeKillQuest()
     local currentMob = config and nearestEnemy(config.EnemyType)
@@ -364,30 +376,44 @@ local function manageQuest()
     if moved then setStatus("Moved to unlocked " .. moved); return id, config end
     local currentLevel = currentMob and (tonumber(currentMob:GetAttribute("Level")) or 0) or 0
     if preferred and (not id or not currentMob or preferred.mobLevel > currentLevel + 40) then
+        local retryAt = state.rejectedQuests[preferred.id] or 0
+        if os.clock() < retryAt then
+            setStatus("Waiting to retry: " .. preferred.id)
+            questLabel.Text = "Quest: waiting for " .. preferred.id
+            return nil, nil
+        end
         if os.clock() - state.lastQuestAction >= 8 then
-            local npcPosition = modelPosition(preferred.npc)
-            if not moveNear(npcPosition, 5) then setStatus("Cannot reach quest NPC"); return id, config end
             state.lastQuestAction = os.clock()
+            setStatus("Requesting quest: " .. preferred.id)
+            local directOk, directResult = invoke(rf.accept, preferred.id)
+            if waitForQuest(preferred.id, 3, 0.3) then
+                setStatus("Quest active: " .. preferred.id)
+                questLabel.Text = "Quest: " .. preferred.id
+                return preferred.id, preferred.config
+            end
+            warn("[PvPFarm] Remote-only AcceptQuest " .. preferred.id .. " returned callOk="
+                .. tostring(directOk) .. " result=" .. tostring(directResult))
+            local npcPosition = modelPosition(preferred.npc)
+            if not moveNear(npcPosition, 5) then
+                state.rejectedQuests[preferred.id] = os.clock() + 30
+                setStatus("Cannot reach quest NPC: " .. preferred.id)
+                return nil, nil
+            end
             setStatus("Talking to " .. preferred.id)
             task.wait(0.8)
-            if not state.alive or not state.quests then return id, config end
+            if not state.alive or not state.quests then return nil, nil end
             local talked, talkResult = invoke(rf.talk, preferred.id)
             if not talked or talkResult == false then
                 state.rejectedQuests[preferred.id] = os.clock() + 30
                 setStatus("NPC talk failed: " .. preferred.id)
-                return id, config
+                warn("[PvPFarm] TalkToNPC " .. preferred.id .. " returned callOk="
+                    .. tostring(talked) .. " result=" .. tostring(talkResult))
+                return nil, nil
             end
             task.wait(2.5)
-            if not state.alive or not state.quests then return id, config end
+            if not state.alive or not state.quests then return nil, nil end
             local ok, result = invoke(rf.accept, preferred.id)
-            local accepted = false
-            for _ = 1, 4 do
-                task.wait(0.4)
-                refreshGameState()
-                accepted = state.questStates[preferred.id] and state.questStates[preferred.id].Ongoing == true
-                if accepted then break end
-            end
-            if accepted then
+            if waitForQuest(preferred.id, 5, 0.4) then
                 state.rejectedQuests[preferred.id] = nil
                 setStatus("Quest active: " .. preferred.id)
                 questLabel.Text = "Quest: " .. preferred.id
@@ -399,7 +425,7 @@ local function manageQuest()
             setStatus("Quest not accepted: " .. preferred.id)
             state.rejectedQuests[preferred.id] = os.clock() + 30
         end
-        return id, config
+        return nil, nil
     end
 
     if id and info then
@@ -420,7 +446,7 @@ local function manageQuest()
         end
     elseif not preferred then
         questLabel.Text = "Quest: no eligible NPC and enemy loaded"
-        if id and not currentMob then setStatus("Quest target not loaded; farming available enemies") end
+        if id and not currentMob then setStatus("Quest target not loaded") end
     end
     return id, config
 end
@@ -505,14 +531,17 @@ task.spawn(function()
                 local _id, config
                 if state.quests then _id, config = manageQuest() end
                 if state.combat then
-                    local enemyType = config and config.EnemyType
-                    local enemy = enemyType and nearestEnemy(enemyType)
-                    if not enemy then enemy = nearestEnemy(strongestEnemyType()) end
-                    if enemy then
-                        farmEnemy(enemy)
+                    if state.quests and (not _id or not config) then
+                        targetLabel.Text = "Target: waiting for accepted quest"
                     else
-                        targetLabel.Text = "Target: waiting for eligible enemy"
-                        if not state.quests then setStatus("No enemy at a safe level loaded") end
+                        local enemy = config and nearestEnemy(config.EnemyType)
+                        if not state.quests and not enemy then enemy = nearestEnemy(strongestEnemyType()) end
+                        if enemy then
+                            farmEnemy(enemy)
+                        else
+                            targetLabel.Text = "Target: waiting for eligible enemy"
+                            if not state.quests then setStatus("No enemy at a safe level loaded") end
+                        end
                     end
                 end
             end
@@ -528,4 +557,4 @@ task.spawn(function()
 end)
 
 refreshUi()
-print("[PvPFarm] Ready, paused. Enable Combat and Quests in the GUI. Unlocked zones only; no PvP targets.")
+print("[PvPFarm] Ready, paused. Quest mode attacks only accepted quest targets; no PvP targets.")
