@@ -26,7 +26,7 @@ local state = {
     selected = {}, catalog = {}, logs = {}, connections = {}, rowConnections = {},
     lastAttempt = setmetatable({}, { __mode = "k" }),
     retries = setmetatable({}, { __mode = "k" }),
-    attempts = 0, confirmed = 0, unconfirmed = 0, live = 0,
+    attempts = 0, confirmed = 0, unconfirmed = 0, live = 0, carried = nil,
     safeCFrame = nil, safeSource = "unset", search = "", dirty = true,
 }
 env.DEVIL_CRATE_HUB = state
@@ -55,10 +55,13 @@ local function crateType(name)
     return (name:gsub("_N%d+$", ""))
 end
 
-local function crateInfo(name)
-    local kind = crateType(name)
+local function crateInfo(model)
+    local kind = crateType(model.Name)
     local family, rarity = kind:match("^Crate_(.+)_([^_]+)$")
-    return family or kind, rarity or "Unknown"
+    return tostring(model:GetAttribute("AreaId") or family or kind),
+        tostring(model:GetAttribute("CrateTier") or rarity or "Unknown"),
+        tonumber(model:GetAttribute("CrateKg")),
+        tostring(model:GetAttribute("CrateSize") or "Unknown")
 end
 
 local function promptFor(model)
@@ -69,7 +72,7 @@ end
 
 local function liveCrate(model)
     return model and model.Parent == cratesFolder and model:IsA("Model")
-        and promptFor(model) ~= nil
+        and model:GetAttribute("IsCrate") == true and promptFor(model) ~= nil
 end
 
 local function characterRoot()
@@ -335,6 +338,13 @@ local function updateStats()
         state.attempts, state.confirmed, state.unconfirmed)
 end
 
+local function kgText(value)
+    if not value then return "?" end
+    if value >= 1000000 then return string.format("%.1fM", value / 1000000) end
+    if value >= 1000 then return string.format("%.1fK", value / 1000) end
+    return string.format("%.0f", value)
+end
+
 local function renderCrates()
     if not state.dirty then return end
     state.dirty = false
@@ -367,7 +377,12 @@ local function renderCrates()
         title.Position = UDim2.fromOffset(48, 4)
         title.Size = UDim2.new(1, -56, 0, 22)
         title.TextTruncate = Enum.TextTruncate.AtEnd
-        local meta = makeText("TextLabel", row, "Meta", "Live " .. item.live .. "   |   " .. item.kind, 11)
+        local weight = kgText(item.minKg)
+        if item.maxKg and item.maxKg ~= item.minKg then
+            weight = weight .. "-" .. kgText(item.maxKg)
+        end
+        local meta = makeText("TextLabel", row, "Meta", "Live " .. item.live
+            .. "  |  " .. weight .. " kg  |  " .. item.size, 11)
         meta.Position = UDim2.fromOffset(48, 25)
         meta.Size = UDim2.new(1, -56, 0, 20)
         meta.TextColor3 = C.muted
@@ -385,8 +400,12 @@ end
 local function scanWorld()
     local previous = {}
     for key, item in pairs(state.catalog) do
-        previous[key] = item.live
+        previous[key] = table.concat({ tostring(item.live), tostring(item.minKg),
+            tostring(item.maxKg), tostring(item.size) }, "|")
         item.live = 0
+        item.minKg = nil
+        item.maxKg = nil
+        item.size = nil
     end
     local count = 0
     for _, model in ipairs(cratesFolder:GetChildren()) do
@@ -396,16 +415,28 @@ local function scanWorld()
             local key = norm(kind)
             local item = state.catalog[key]
             if not item then
-                local family, rarity = crateInfo(model.Name)
+                local family, rarity = crateInfo(model)
                 item = { kind = kind, family = family, rarity = rarity, live = 0 }
                 state.catalog[key] = item
                 state.dirty = true
             end
             item.live = item.live + 1
+            local _, _, kg, size = crateInfo(model)
+            if kg then
+                item.minKg = math.min(item.minKg or kg, kg)
+                item.maxKg = math.max(item.maxKg or kg, kg)
+            end
+            if item.size and item.size ~= size then
+                item.size = "MIXED"
+            else
+                item.size = size
+            end
         end
     end
     for key, item in pairs(state.catalog) do
-        if item.live ~= (previous[key] or 0) then state.dirty = true end
+        local current = table.concat({ tostring(item.live), tostring(item.minKg),
+            tostring(item.maxKg), tostring(item.size) }, "|")
+        if current ~= previous[key] then state.dirty = true end
     end
     state.live = count
     local selectedCount = 0
@@ -415,6 +446,7 @@ local function scanWorld()
 end
 
 local function chooseCrate()
+    if state.carried then return nil end
     local options = {}
     for _, model in ipairs(cratesFolder:GetChildren()) do
         if liveCrate(model) and state.selected[norm(crateType(model.Name))]
@@ -427,8 +459,8 @@ local function chooseCrate()
     local root = characterRoot()
     table.sort(options, function(a, b)
         if state.rareFirst then
-            local _, ar = crateInfo(a.Name)
-            local _, br = crateInfo(b.Name)
+            local _, ar = crateInfo(a)
+            local _, br = crateInfo(b)
             local ap, bp = rarityOrder[ar] or 0, rarityOrder[br] or 0
             if ap ~= bp then return ap > bp end
         end
@@ -443,17 +475,13 @@ local function chooseCrate()
 end
 
 local function activatePrompt(prompt)
-    if type(fireproximityprompt) == "function" then
-        fireproximityprompt(prompt)
-    else
-        prompt:InputHoldBegin()
-        task.wait(prompt.HoldDuration + 0.12)
-        prompt:InputHoldEnd()
-    end
+    prompt:InputHoldBegin()
+    task.wait(prompt.HoldDuration + 0.15)
+    prompt:InputHoldEnd()
 end
 
 local function collect(model)
-    if state.busy or not liveCrate(model) then return end
+    if state.busy or state.carried or not liveCrate(model) then return end
     if not state.safeCFrame then
         log("Set a safe return point first")
         return
@@ -466,6 +494,7 @@ local function collect(model)
     local name = model.Name
     local target = model:GetPivot().Position
     log("Going to " .. name)
+    local picked = false
     local ok, err = pcall(function()
         local root = characterRoot()
         if not root then error("Character unavailable") end
@@ -479,19 +508,40 @@ local function collect(model)
         local prompt = promptFor(model)
         if not prompt then error("Crate prompt disappeared") end
         activatePrompt(prompt)
-        task.wait(1.3)
+        task.wait(0.45)
+        picked = model.Parent ~= cratesFolder or not prompt.Enabled
+        if not picked and type(fireproximityprompt) == "function" then
+            fireproximityprompt(prompt)
+            task.wait(0.45)
+            picked = model.Parent ~= cratesFolder or not prompt.Enabled
+        end
+        if not picked then error("Steal prompt did not pick up crate") end
+        if model.Parent == cratesFolder then
+            state.carried = model
+            log("Picked up " .. name .. " / returning to safe zone")
+        end
     end)
     local returned = teleport(state.safeCFrame)
     if not returned then log("Return failed: character unavailable") end
     if not ok then
         state.unconfirmed = state.unconfirmed + 1
         log("Interaction error: " .. tostring(err):sub(1, 110))
-    elseif not liveCrate(model) then
-        state.confirmed = state.confirmed + 1
-        log("Confirmed collected: " .. name)
     else
-        state.unconfirmed = state.unconfirmed + 1
-        log("Still visible after prompt: " .. name)
+        for _ = 1, 10 do
+            if model.Parent ~= cratesFolder then break end
+            task.wait(0.35)
+        end
+        if model.Parent ~= cratesFolder then
+            state.carried = nil
+            state.confirmed = state.confirmed + 1
+            log("Delivered to safe zone: " .. name)
+        elseif promptFor(model) then
+            state.carried = nil
+            state.unconfirmed = state.unconfirmed + 1
+            log("Crate dropped or pickup rejected: " .. name)
+        else
+            log("Still carrying " .. name .. " / move inside safe zone")
+        end
     end
     updateStats()
     state.busy = false
@@ -566,6 +616,10 @@ table.insert(state.connections, prioritize.Activated:Connect(function()
     prioritize.Text = state.rareFirst and "RARE FIRST: ON" or "RARE FIRST: OFF"
 end))
 table.insert(state.connections, once.Activated:Connect(function()
+    if state.carried then
+        log("Finish delivering the carried crate first")
+        return
+    end
     scanWorld()
     local model = chooseCrate()
     if model then task.spawn(collect, model) else log("No selected crate available") end
@@ -638,8 +692,27 @@ task.spawn(function()
     while state.alive do
         local ok, err = pcall(function()
             scanWorld()
+            if state.carried then
+                local carried = state.carried
+                if carried.Parent ~= cratesFolder then
+                    state.carried = nil
+                    state.confirmed = state.confirmed + 1
+                    updateStats()
+                    log("Delivered to safe zone: " .. carried.Name)
+                elseif promptFor(carried) then
+                    state.carried = nil
+                    state.unconfirmed = state.unconfirmed + 1
+                    updateStats()
+                    log("Carried crate was dropped: " .. carried.Name)
+                end
+            end
             if state.enabled and not state.busy then
-                if next(state.selected) == nil then
+                if state.carried then
+                    if state.lastIdle ~= "carrying" then
+                        state.lastIdle = "carrying"
+                        log("Carrying crate: reach the safe zone")
+                    end
+                elseif next(state.selected) == nil then
                     if state.lastIdle ~= "selection" then
                         state.lastIdle = "selection"
                         log("Select crate types in CRATES")
