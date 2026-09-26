@@ -25,7 +25,6 @@ local rf = {
     talk = remote("QuestService", "TalkToNPC"),
     accept = remote("QuestService", "AcceptQuest"),
     complete = remote("QuestService", "CompleteQuest"),
-    getZones = remote("ZoneHandler", "GetZones"),
     registerAttack = remote("CombatService", "RegisterAttack"),
     weaponDamage = remote("CombatService", "WeaponDamage"),
 }
@@ -35,7 +34,7 @@ if env.VANTA_PvPFarm and type(env.VANTA_PvPFarm.stop) == "function" then pcall(e
 local state = {
     alive = true, combat = false, quests = false, mode = "Direct", selected = nil,
     lastQuestAction = 0, lastZoneMove = 0, travelUntil = 0, lastRefresh = 0, combo = 1, rejectedHits = 0,
-    questStates = {}, unlocked = {}, connections = {}, currentTarget = nil,
+    questStates = {}, connections = {}, currentTarget = nil,
     availabilityCache = {}, rejectedQuests = {},
 }
 env.VANTA_PvPFarm = state
@@ -67,9 +66,9 @@ local function modelPosition(model)
     return ok and cf.Position or nil
 end
 
-local function livingEnemy(model)
+local function livingEnemy(model, allowBoss)
     if not model or model.Parent ~= enemies or not model:IsA("Model") then return false end
-    if model:GetAttribute("IsBoss") then return false end
+    if model:GetAttribute("IsBoss") and not allowBoss then return false end
     local humanoid = model:FindFirstChildOfClass("Humanoid")
     return humanoid ~= nil and humanoid.Health > 0
 end
@@ -79,7 +78,7 @@ local function nearestEnemy(enemyType)
     local origin = characterRoot and characterRoot.Position
     local chosen, distance
     for _, model in ipairs(enemies:GetChildren()) do
-        if livingEnemy(model) and (not enemyType or model.Name == enemyType) then
+        if livingEnemy(model, enemyType ~= nil) and (not enemyType or model.Name == enemyType) then
             local mobLevel = tonumber(model:GetAttribute("Level")) or 0
             if mobLevel <= level() + 25 then
                 local position = modelPosition(model)
@@ -115,6 +114,14 @@ local function findNpc(id)
     return inst and inst:IsA("Model") and inst or nil
 end
 
+local function islandOf(inst)
+    while inst and inst.Parent do
+        if inst.Parent == islands then return inst.Name end
+        inst = inst.Parent
+    end
+    return nil
+end
+
 local function activeKillQuest()
     for id, info in pairs(state.questStates) do
         local config = questData[id]
@@ -123,12 +130,17 @@ local function activeKillQuest()
     return nil
 end
 
-local function meetsQuestLevel(config)
+local function questLevel(config, npc)
     local first = config.Quests and config.Quests[1]
     local dialogue = type(first) == "table" and first.DialogueRequirement
-    local required = (type(dialogue) == "table" and tonumber(dialogue.Level))
-        or tonumber(config.RecommendedLevel) or 0
-    return level() >= required
+    local dialogueLevel = type(dialogue) == "table" and tonumber(dialogue.Level) or nil
+    local recommended = tonumber(config.RecommendedLevel)
+    local island = islandOf(npc)
+    local zone = island and zoneData[island]
+    local zoneMinimum = zone and zone.Level and tonumber(zone.Level.Min)
+    local minimum = dialogueLevel or recommended or zoneMinimum
+    if not minimum then return nil end
+    return math.max(minimum, recommended or 0, zoneMinimum or 0), minimum
 end
 
 local function questAvailable(id)
@@ -142,16 +154,17 @@ local function questAvailable(id)
 end
 
 local function chooseQuest()
-    local best, bestLevel
+    local best
+    local playerLevel = level()
     for id, config in pairs(questData) do
-        if type(config) == "table" and type(config.EnemyType) == "string"
-            and meetsQuestLevel(config) then
+        if type(config) == "table" and type(config.EnemyType) == "string" then
             local npc = findNpc(id)
-            local mob = nearestEnemy(config.EnemyType)
-            if npc and mob then
-                local mobLevel = tonumber(mob:GetAttribute("Level")) or 0
-                if (not bestLevel or mobLevel > bestLevel) and questAvailable(id) then
-                    best, bestLevel = { id = id, config = config, npc = npc, mobLevel = mobLevel }, mobLevel
+            if npc then
+                local rank, minimum = questLevel(config, npc)
+                if rank and minimum <= playerLevel and rank <= playerLevel + 25
+                    and (not best or rank > best.questLevel
+                        or (rank == best.questLevel and id < best.id)) then
+                    best = { id = id, config = config, npc = npc, questLevel = rank }
                 end
             end
         end
@@ -195,39 +208,6 @@ local function moveNear(position, distance)
     characterRoot.CFrame = CFrame.lookAt(destination, position)
     characterRoot.AssemblyLinearVelocity = Vector3.zero
     return (characterRoot.Position - position).Magnitude <= distance + 4
-end
-
-local function bestUnlockedZone()
-    local best, bestMin
-    if not islands or type(zoneData) ~= "table" then return nil end
-    for id, unlocked in pairs(state.unlocked) do
-        local data = zoneData[id]
-        local island = islands:FindFirstChild(id)
-        local minimum = data and data.Level and tonumber(data.Level.Min)
-        if unlocked and island and minimum and minimum <= level() + 25
-            and (not bestMin or minimum > bestMin) then
-            best, bestMin = island, minimum
-        end
-    end
-    return best, bestMin
-end
-
-local function visitNewZone(preferredLevel)
-    local island, minimum = bestUnlockedZone()
-    if not island or (preferredLevel and minimum <= preferredLevel + 40) then return false end
-    if os.clock() - state.lastZoneMove < 20 then return false end
-    local waypoint = island:FindFirstChild("Waypoint_" .. island.Name)
-    local anchor = waypoint and waypoint:FindFirstChild("TeleporterPurchasePart", true)
-    if not anchor then return false end
-    local anchorPosition = modelPosition(anchor)
-    local characterRoot = root()
-    if not anchorPosition or (characterRoot and (characterRoot.Position - anchorPosition).Magnitude < 80) then return false end
-    state.lastZoneMove = os.clock()
-    if moveNear(anchorPosition, 12) then
-        state.travelUntil = os.clock() + 5
-        return island.Name
-    end
-    return false
 end
 
 local gui = Instance.new("ScreenGui")
@@ -349,10 +329,6 @@ end))
 local function refreshGameState()
     local questsOk, quests = invoke(rf.getQuests)
     if questsOk and type(quests) == "table" then state.questStates = quests end
-    local zonesOk, zones = invoke(rf.getZones)
-    if zonesOk and type(zones) == "table" and type(zones.Unlocked) == "table" then
-        state.unlocked = zones.Unlocked
-    end
     state.lastRefresh = os.clock()
 end
 
@@ -372,14 +348,19 @@ local function manageQuest()
     local id, config, info = activeKillQuest()
     local currentMob = config and nearestEnemy(config.EnemyType)
     local preferred = chooseQuest()
-    local moved = visitNewZone(preferred and preferred.mobLevel or nil)
-    if moved then setStatus("Moved to unlocked " .. moved); return id, config end
-    local currentLevel = currentMob and (tonumber(currentMob:GetAttribute("Level")) or 0) or 0
-    if preferred and (not id or not currentMob or preferred.mobLevel > currentLevel + 40) then
+    local currentQuestLevel = id and questLevel(config, findNpc(id)) or 0
+    if preferred and (not id or preferred.questLevel > (currentQuestLevel or 0)) then
+        questLabel.Text = string.format("Quest: %s  Lv.%d", preferred.id, preferred.questLevel)
+        if not questAvailable(preferred.id) then
+            local cached = state.availabilityCache[preferred.id]
+            local reason = cached and cached.reason or "unavailable"
+            setStatus("Locked: " .. tostring(reason):sub(1, 90))
+            targetLabel.Text = "Target: waiting for quest unlock"
+            return nil, nil
+        end
         local retryAt = state.rejectedQuests[preferred.id] or 0
         if os.clock() < retryAt then
             setStatus("Waiting to retry: " .. preferred.id)
-            questLabel.Text = "Quest: waiting for " .. preferred.id
             return nil, nil
         end
         if os.clock() - state.lastQuestAction >= 8 then
@@ -393,6 +374,25 @@ local function manageQuest()
             end
             warn("[PvPFarm] Remote-only AcceptQuest " .. preferred.id .. " returned callOk="
                 .. tostring(directOk) .. " result=" .. tostring(directResult))
+            if not state.alive or not state.quests then return nil, nil end
+            local completeOk, completeResult = invoke(rf.complete, preferred.id)
+            local talkOk, talkResult = invoke(rf.talk, preferred.id)
+            if talkOk and talkResult ~= false then
+                task.wait(2.5)
+                if not state.alive or not state.quests then return nil, nil end
+                local acceptOk, acceptResult = invoke(rf.accept, preferred.id)
+                if waitForQuest(preferred.id, 5, 0.4) then
+                    setStatus("Quest active: " .. preferred.id)
+                    questLabel.Text = "Quest: " .. preferred.id
+                    return preferred.id, preferred.config
+                end
+                warn("[PvPFarm] Remote-only dialogue " .. preferred.id .. " complete="
+                    .. tostring(completeOk) .. "/" .. tostring(completeResult) .. " talk="
+                    .. tostring(talkResult) .. " accept=" .. tostring(acceptOk) .. "/" .. tostring(acceptResult))
+            else
+                warn("[PvPFarm] Remote-only TalkToNPC " .. preferred.id .. " returned callOk="
+                    .. tostring(talkOk) .. " result=" .. tostring(talkResult))
+            end
             local npcPosition = modelPosition(preferred.npc)
             if not moveNear(npcPosition, 5) then
                 state.rejectedQuests[preferred.id] = os.clock() + 30
@@ -402,6 +402,7 @@ local function manageQuest()
             setStatus("Talking to " .. preferred.id)
             task.wait(0.8)
             if not state.alive or not state.quests then return nil, nil end
+            invoke(rf.complete, preferred.id)
             local talked, talkResult = invoke(rf.talk, preferred.id)
             if not talked or talkResult == false then
                 state.rejectedQuests[preferred.id] = os.clock() + 30
@@ -432,6 +433,21 @@ local function manageQuest()
         local needed = requiredKills(config)
         local progress = killProgress(info, config.EnemyType)
         questLabel.Text = string.format("Quest: %s  %d/%s", id, progress, needed and tostring(needed) or "?")
+        if not currentMob then
+            local npc = findNpc(id)
+            local npcPosition = npc and modelPosition(npc)
+            local characterRoot = root()
+            if npcPosition and characterRoot and (characterRoot.Position - npcPosition).Magnitude > 100
+                and os.clock() - state.lastZoneMove >= 8 then
+                state.lastZoneMove = os.clock()
+                if moveNear(npcPosition, 12) then
+                    state.travelUntil = os.clock() + 2
+                    setStatus("Loading quest target: " .. config.EnemyType)
+                end
+            else
+                setStatus("Waiting for quest target: " .. config.EnemyType)
+            end
+        end
         if needed and progress >= needed and os.clock() - state.lastQuestAction >= 5 then
             local npc = findNpc(id)
             if npc and moveNear(modelPosition(npc), 11) then
@@ -445,7 +461,7 @@ local function manageQuest()
             end
         end
     elseif not preferred then
-        questLabel.Text = "Quest: no eligible NPC and enemy loaded"
+        questLabel.Text = "Quest: no matching level quest loaded"
         if id and not currentMob then setStatus("Quest target not loaded") end
     end
     return id, config
@@ -457,7 +473,7 @@ local attackProfiles = {
     { length = 0.469672561255771, start = 0.2683843138617466, finish = 0.40257649478804886 },
 }
 
-local function directAttack(enemy)
+local function directAttack(enemy, allowBoss)
     local profile = attackProfiles[state.combo]
     local packet = {
         AttackStart = WS:GetServerTimeNow(),
@@ -471,7 +487,7 @@ local function directAttack(enemy)
     local registered, registerResult = invoke(rf.registerAttack, packet)
     if not registered or registerResult == false then return false, "Attack registration failed" end
     task.wait(profile.start)
-    if not livingEnemy(enemy) then return true end
+    if not livingEnemy(enemy, allowBoss) then return true end
     local hit, hitResult = invoke(rf.weaponDamage, enemy, nil)
     state.combo = state.combo % #attackProfiles + 1
     if not hit or hitResult == false then return false, "Damage call rejected" end
@@ -497,15 +513,15 @@ local function inputAttack()
     return ok, err
 end
 
-local function farmEnemy(enemy)
-    if not livingEnemy(enemy) then return end
+local function farmEnemy(enemy, allowBoss)
+    if not livingEnemy(enemy, allowBoss) then return end
     local position = modelPosition(enemy)
     if not moveNear(position, 7) then setStatus("Cannot reach target"); return end
     state.currentTarget = enemy
     targetLabel.Text = string.format("Target: %s  Lv.%s", enemy.Name, tostring(enemy:GetAttribute("Level") or "?"))
     local ok, err
     if state.mode == "Direct" then
-        ok, err = directAttack(enemy)
+        ok, err = directAttack(enemy, allowBoss)
     else
         ok, err = inputAttack()
     end
@@ -537,7 +553,7 @@ task.spawn(function()
                         local enemy = config and nearestEnemy(config.EnemyType)
                         if not state.quests and not enemy then enemy = nearestEnemy(strongestEnemyType()) end
                         if enemy then
-                            farmEnemy(enemy)
+                            farmEnemy(enemy, state.quests and config ~= nil)
                         else
                             targetLabel.Text = "Target: waiting for eligible enemy"
                             if not state.quests then setStatus("No enemy at a safe level loaded") end
