@@ -308,17 +308,22 @@ for _, inst in ipairs(ReplicatedStorage:GetDescendants()) do watchRemote(inst) e
 spy.connections[#spy.connections + 1] = ReplicatedStorage.DescendantAdded:Connect(watchRemote)
 
 local slot = env.DEVIL_OPEN_SEA_SPY_HOOK
+if slot and slot.version ~= 2 then
+    slot.spy = nil
+    slot = nil
+end
 if not slot and type(hookmetamethod) == "function" and type(getnamecallmethod) == "function" then
-    slot = { spy = spy }
+    slot = { spy = spy, version = 2 }
     local oldNamecall
     local wrap = type(newcclosure) == "function" and newcclosure or function(fn) return fn end
     local ok, old = pcall(function()
         return hookmetamethod(game, "__namecall", wrap(function(self, ...)
             local method = getnamecallmethod()
             local current = slot.spy
-            if current and current.active and typeof(self) == "Instance"
-                and (self:IsA("RemoteEvent") or self:IsA("RemoteFunction") or self:IsA("UnreliableRemoteEvent"))
-                and (method == "FireServer" or method == "InvokeServer") then
+            local outgoing = method == "FireServer" or method == "InvokeServer"
+            local class = outgoing and typeof(self) == "Instance" and self.ClassName or ""
+            if current and current.active and outgoing
+                and (class == "RemoteEvent" or class == "RemoteFunction" or class == "UnreliableRemoteEvent") then
                 local arguments = table.pack(...)
                 pcall(function()
                     current.record("REMOTE_OUT " .. method,
