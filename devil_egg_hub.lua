@@ -115,6 +115,12 @@ local function eggUuid(model)
     return nil
 end
 
+local function pickupPrompt(model)
+    local prompt = model:FindFirstChild("Pickup", true)
+    if prompt and prompt:IsA("ProximityPrompt") then return prompt end
+    return nil
+end
+
 local function root()
     local character = player.Character
     local humanoid = character and character:FindFirstChildOfClass("Humanoid")
@@ -522,7 +528,8 @@ local function attemptPickup(model)
     state.busy = true
     local name = eggName(model)
     local uuid = eggUuid(model)
-    if not uuid then
+    local prompt = not uuid and pickupPrompt(model)
+    if not uuid and not prompt then
         if not state.noIdWarning then
             local keys = {}
             for key in pairs(model:GetAttributes()) do keys[#keys + 1] = key end
@@ -543,35 +550,64 @@ local function attemptPickup(model)
     state.retries[model] = (state.retries[model] or 0) + 1
     state.attempts = state.attempts + 1
     updateStats()
-    log("Pickup request: " .. name)
-    local ok, err = pcall(function() pickupRemote:FireServer(uuid) end)
+    local moved, original
+    if prompt then
+        log("Prompt pickup: " .. name)
+        moved, original = pullLocal(model)
+        if not moved then
+            state.misses = state.misses + 1
+            updateStats()
+            log("Could not move prompt near player: " .. name)
+            state.busy = false
+            return
+        end
+        task.wait(0.15)
+    else
+        log("Pickup request: " .. name)
+    end
+    local ok, err = pcall(function()
+        if prompt then
+            if type(fireproximityprompt) == "function" then
+                fireproximityprompt(prompt)
+            else
+                prompt:InputHoldBegin()
+                task.wait(prompt.HoldDuration + 0.1)
+                prompt:InputHoldEnd()
+            end
+        else
+            pickupRemote:FireServer(uuid)
+        end
+    end)
     if not ok then
+        if moved and validFieldEgg(model) then
+            pcall(function() model:PivotTo(original) end)
+        end
         state.misses = state.misses + 1
         updateStats()
-        log("Remote error: " .. tostring(err))
+        log("Pickup error: " .. tostring(err))
         state.busy = false
         return
     end
-    task.wait(0.65)
-    if validFieldEgg(model) and state.alive and state.enabled then
-        local moved, original = pullLocal(model)
+    task.wait(prompt and 1.1 or 0.65)
+    if not prompt and validFieldEgg(model) and state.alive and state.enabled then
+        moved, original = pullLocal(model)
         if moved then
             log("Local pull: " .. name .. " / waiting for server")
             if state.alive and state.enabled and validFieldEgg(model) then
                 pcall(function() pickupRemote:FireServer(uuid) end)
                 task.wait(1.1)
             end
-            if validFieldEgg(model) then
-                pcall(function() model:PivotTo(original) end)
-            end
         end
+    end
+    if moved and validFieldEgg(model) then
+        pcall(function() model:PivotTo(original) end)
     end
     if not validFieldEgg(model) then
         state.removed = state.removed + 1
         log("Egg left world: " .. name)
     else
         state.misses = state.misses + 1
-        log("Still in world: " .. name .. " / server may reject distance")
+        log("Still in world: " .. name .. " / server may reject distance or prompt")
         if state.retries[model] >= 3 then log("Stopped retries for this egg: " .. name) end
     end
     updateStats()
@@ -718,7 +754,7 @@ task.spawn(function()
                         belowWeight = belowWeight + 1
                     elseif (state.retries[model] or 0) >= 3 then
                         exhausted = exhausted + 1
-                    elseif not eggUuid(model) then
+                    elseif not eggUuid(model) and not pickupPrompt(model) then
                         missingUuid = missingUuid + 1
                         if not state.uuidWarned[model] then
                             state.uuidWarned[model] = true
@@ -746,7 +782,7 @@ task.spawn(function()
             elseif matched == 0 then
                 state.scanStatus = "No selected eggs in " .. (folder and folder.Name or "world")
             elseif missingUuid > 0 then
-                state.scanStatus = "Matched " .. matched .. ", but UUID missing on " .. missingUuid
+                state.scanStatus = "Matched " .. matched .. ", no UUID or Pickup prompt: " .. missingUuid
             elseif belowWeight > 0 then
                 state.scanStatus = "Matched " .. matched .. ", below/unknown weight: " .. belowWeight
             elseif exhausted > 0 then
