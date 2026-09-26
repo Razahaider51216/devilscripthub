@@ -116,10 +116,16 @@ local trainingSentTokens = {}
 local trainingBonusRemote = nil
 local trainingBonusConnection = nil
 local trainingLoopGeneration = 0
+local autoSeaOn = false
+local seaBusy = false
+local seaLastAttempt = 0
+local seaLoopGeneration = 0
+local seaStartRemote = nil
 local preTeleportDelay = 3.5
 local collectBusy = false
 local safeCFrame = nil
 local autoDelay = 1.6
+local carryTarget = 1
 local targetCount = 0
 local collectedCount = 0
 local failedCount = 0
@@ -136,6 +142,8 @@ local espBtn
 local rarerModeBtn
 local trainingBtn
 local trainingStatusLbl
+local seaBtn
+local seaStatusLbl
 local rarityButtons = {}
 local selectedSummaryLbl
 local rarityListFrame
@@ -623,11 +631,11 @@ findPickupPrompt = function(egg)
     return nil
 end
 
-local function findTrainingRemote(remoteName, className)
+local function findServiceRemote(serviceName, remoteName, className)
     local direct = RS:FindFirstChild("Packages")
     if direct then
         local ok, found = pcall(function()
-            return RS["Packages"]["_Index"]["sleitnick_knit@1.7.0"]["knit"]["Services"]["TrainingService"][className == "RemoteEvent" and "RE" or "RF"][remoteName]
+            return RS["Packages"]["_Index"]["sleitnick_knit@1.7.0"]["knit"]["Services"][serviceName][className == "RemoteEvent" and "RE" or "RF"][remoteName]
         end)
         if ok and found and found:IsA(className) then
             return found
@@ -637,13 +645,79 @@ local function findTrainingRemote(remoteName, className)
     for _, d in ipairs(RS:GetDescendants()) do
         if d.Name == remoteName and d:IsA(className) then
             local full = d:GetFullName()
-            if full:find("TrainingService", 1, true) then
+            if full:find(serviceName, 1, true) then
                 return d
             end
         end
     end
 
     return nil
+end
+
+local function findTrainingRemote(remoteName, className)
+    return findServiceRemote("TrainingService", remoteName, className)
+end
+
+local function seaStatus(text, color)
+    if seaStatusLbl then
+        seaStatusLbl.Text = text
+        seaStatusLbl.TextColor3 = color or UI.muted
+    end
+end
+
+local function updateSeaButton()
+    if not seaBtn then return end
+    seaBtn.Text = autoSeaOn and "AUTO OPEN SEA: ON" or "AUTO OPEN SEA: OFF"
+    seaBtn.TextColor3 = autoSeaOn and UI.text or UI.amber
+    seaBtn.BackgroundColor3 = autoSeaOn and Color3.fromRGB(18, 72, 92) or UI.button
+end
+
+local function openSeaOnce()
+    if not runtime.active or seaBusy then return false end
+    if player:GetAttribute("IsWaveActive") == true then
+        seaStatus("Wave active", UI.green)
+        return false
+    end
+    if player:GetAttribute("InSeaEdge") ~= true then
+        seaStatus("Move to the sea edge", UI.amber)
+        return false
+    end
+    if os.clock() - seaLastAttempt < 4 then return false end
+
+    if not seaStartRemote or not seaStartRemote.Parent then
+        seaStartRemote = findServiceRemote("WaveService", "Start", "RemoteFunction")
+    end
+    if not seaStartRemote then
+        seaStatus("WaveService.Start not found", UI.red)
+        return false
+    end
+
+    seaBusy = true
+    seaLastAttempt = os.clock()
+    seaStatus("Opening sea: perfect charge", UI.cyan)
+    local ok, result = pcall(function()
+        return seaStartRemote:InvokeServer(5)
+    end)
+    seaBusy = false
+    if ok and type(result) == "table" and tonumber(result.extension) == 5 then
+        seaStatus("Perfect charge: +5s", UI.green)
+        return true
+    end
+    seaStatus(ok and "Open Sea not confirmed" or ("Open Sea failed: " .. tostring(result)), UI.red)
+    return false
+end
+
+local function seaLoop()
+    seaLoopGeneration = seaLoopGeneration + 1
+    local generation = seaLoopGeneration
+    task.spawn(function()
+        while runtime.active and autoSeaOn and generation == seaLoopGeneration do
+            if not seaBusy then
+                openSeaOnce()
+            end
+            task.wait(0.4)
+        end
+    end)
 end
 
 local function trainingStatus(text, color)
@@ -935,89 +1009,107 @@ end
 collectEgg = function(egg)
     if not runtime.active or not hasSelectedFilter() or collectBusy or not egg or not egg.Parent or not isTargetEgg(egg) then return false end
     collectBusy = true
-
-    local rarity, name, kg = resolveInfo(egg)
-    local anchor = getAnchor(egg)
-    if not anchor then
-        failedCount = failedCount + 1
-        collectBusy = false
-        updateCountLabel()
-        return false
-    end
-
-    local prompt = findPickupPrompt(egg)
-    if not prompt then
-        processed[targetKey(egg)] = os.clock()
-        collectBusy = false
-        setStatus("Skip collected/no pickup prompt: " .. tostring(name), UI.muted)
-        return false
-    end
-
-    local key = targetKey(egg)
-    if processed[key] and os.clock() - processed[key] < 20 then
-        collectBusy = false
-        return false
-    end
-    processed[key] = os.clock()
-
     if not safeCFrame then
         captureSafeZone()
     end
+    local pickedThisTrip = 0
+    local failedThisTrip = false
+    local current = egg
+    local firstPickup = true
+    local movedToEgg = false
+    local waveWasActive = player:GetAttribute("IsWaveActive") == true
 
-    setStatus("Wait " .. string.format("%.1f", preTeleportDelay) .. "s -> " .. rarity .. " " .. name, rarityColor(rarity))
-    task.wait(preTeleportDelay)
-
-    if not runtime.active or not egg.Parent or not isTargetEgg(egg) then
+    while runtime.active and current and pickedThisTrip < carryTarget do
+        if waveWasActive and player:GetAttribute("IsWaveActive") ~= true then
+            setStatus("Wave closed; returning safe", UI.amber)
+            break
+        end
+        if not isTargetEgg(current) then break end
+        local key = targetKey(current)
+        if processed[key] and os.clock() - processed[key] < 20 then break end
         processed[key] = os.clock()
-        collectBusy = false
-        setStatus("Skip vanished/changed egg: " .. tostring(name), UI.muted)
-        return false
-    end
 
-    anchor = getAnchor(egg)
-    prompt = findPickupPrompt(egg)
-    if not anchor or not prompt then
-        processed[key] = os.clock()
-        collectBusy = false
-        setStatus("Skip no pickup after delay: " .. tostring(name), UI.muted)
-        return false
-    end
+        local rarity, name, kg = resolveInfo(current)
+        if firstPickup then
+            setStatus("Wait " .. string.format("%.1f", preTeleportDelay) .. "s -> " .. rarity .. " " .. name, rarityColor(rarity))
+            task.wait(preTeleportDelay)
+            firstPickup = false
+        end
 
-    setStatus("TP -> " .. rarity .. " " .. name .. " (" .. formatWeight(kg) .. ")", rarityColor(rarity))
-    warn("[VANTA V2] TP target:", rarity, egg:GetFullName(), "prompt:", prompt:GetFullName())
-    pivotTo(CFrame.new(anchor.Position + Vector3.new(0, 4, 0), anchor.Position))
-    task.wait(0.35)
+        if not runtime.active or not isTargetEgg(current) then
+            setStatus("Skip vanished/changed egg: " .. tostring(name), UI.muted)
+            break
+        end
 
-    if not runtime.active or not egg.Parent or not isTargetEgg(egg) then
-        returnToSafe()
-        collectBusy = false
-        setStatus("Skip unselected/changed egg: " .. tostring(name), UI.muted)
-        return false
-    end
+        local anchor = getAnchor(current)
+        local prompt = findPickupPrompt(current)
+        if not anchor or not prompt then
+            setStatus("Skip egg without pickup: " .. tostring(name), UI.muted)
+            break
+        end
 
-    prompt = findPickupPrompt(egg)
-    local picked = false
-    if prompt then
-        setStatus("Pickup: " .. name, rarityColor(rarity))
-        picked = firePrompt(prompt)
-    else
-        setStatus("Pickup prompt not found: " .. name, UI.red)
-    end
+        setStatus("TP -> " .. rarity .. " " .. name .. " (" .. formatWeight(kg) .. ")", rarityColor(rarity))
+        if not pivotTo(CFrame.new(anchor.Position + Vector3.new(0, 4, 0), anchor.Position)) then
+            failedThisTrip = true
+            failedCount = failedCount + 1
+            break
+        end
+        movedToEgg = true
+        task.wait(0.35)
 
-    task.wait(0.45)
-    returnToSafe()
+        if not runtime.active or not isTargetEgg(current) then
+            setStatus("Skip unselected/changed egg: " .. tostring(name), UI.muted)
+            break
+        end
 
-    if picked then
+        prompt = findPickupPrompt(current)
+        if not prompt or not firePrompt(prompt) then
+            failedThisTrip = true
+            failedCount = failedCount + 1
+            setStatus("Pickup failed: " .. tostring(name), UI.red)
+            break
+        end
+
+        local confirmed = false
+        for _ = 1, 8 do
+            task.wait(0.15)
+            if not isSpawnedEgg(current) or isCollectedOrStoredEgg(current) or not findPickupPrompt(current) then
+                confirmed = true
+                break
+            end
+        end
+        if not confirmed then
+            failedThisTrip = true
+            failedCount = failedCount + 1
+            setStatus("Pickup not confirmed: " .. tostring(name), UI.red)
+            break
+        end
+
+        pickedThisTrip = pickedThisTrip + 1
         collectedCount = collectedCount + 1
-        setStatus("Picked + returned safe: " .. rarity .. " " .. name, UI.green)
-    else
-        failedCount = failedCount + 1
-        setStatus("Failed + returned safe: " .. rarity .. " " .. name, UI.red)
+        setStatus(string.format("Carrying %d/%d selected eggs", pickedThisTrip, carryTarget), UI.green)
+        current = nil
+        if pickedThisTrip < carryTarget then
+            for _, item in ipairs(getTargets()) do
+                local nextKey = targetKey(item.inst)
+                if not processed[nextKey] or os.clock() - processed[nextKey] >= 20 then
+                    current = item.inst
+                    break
+                end
+            end
+        end
     end
 
+    local returned = not movedToEgg or returnToSafe()
+    if pickedThisTrip > 0 then
+        setStatus(string.format(returned and "Returned safe with %d/%d selected eggs" or "Safe return failed; carrying %d/%d eggs",
+            pickedThisTrip, carryTarget), returned and UI.green or UI.red)
+    elseif failedThisTrip then
+        setStatus("No egg carried; pickup failed", UI.red)
+    end
     updateCountLabel()
     collectBusy = false
-    return picked
+    return pickedThisTrip > 0
 end
 
 local function collectBest()
@@ -1179,6 +1271,8 @@ runtime.stop = function()
     runtime.active = false
     autoOn = false
     trainingX2On = false
+    autoSeaOn = false
+    seaLoopGeneration = seaLoopGeneration + 1
     for _, connection in ipairs(runtime.connections) do
         connection:Disconnect()
     end
@@ -1365,6 +1459,7 @@ end
 local collectorSection = mkSection("Collector")
 local raritySection = mkSection("Filters")
 local trainingSection = mkSection("Training")
+mkSection("Open Sea")
 local safeSection = mkSection("Safe Zone")
 local visualSection = mkSection("Visual")
 
@@ -1415,6 +1510,7 @@ mkTab("Filters", 50)
 mkTab("Training", 90)
 mkTab("Safe Zone", 130)
 mkTab("Visual", 170)
+mkTab("Open Sea", 210)
 
 local function mkHeader(parent, title, subtitle)
     local h = Instance.new("TextLabel")
@@ -1461,6 +1557,7 @@ end
 mkHeader(collectorSection, "Auto Collector", "Collect eggs matching the selected filters")
 mkHeader(raritySection, "Egg Filters", "Selections in different groups must all match")
 mkHeader(trainingSection, "Training x2", "Auto claim the x2 training bonus when it appears")
+mkHeader(sections["Open Sea"], "Open Sea", "Perfect charge when standing at the sea edge")
 mkHeader(safeSection, "Safe Zone", "Return point after every pickup")
 mkHeader(visualSection, "Visual", "Target ESP and scan tools")
 
@@ -1649,6 +1746,92 @@ autoBtn = mkBtn(collectorSection, "AUTO COLLECT: OFF", UI.amber, 0, 128, 154)
 local onceBtn = mkBtn(collectorSection, "COLLECT ONCE", UI.cyan, 166, 128, 154)
 deepScanBtn = mkBtn(collectorSection, "LONG RANGE: ON", UI.green, 0, 250, 154)
 local deepOnceBtn = mkBtn(collectorSection, "RESCAN FAR", UI.cyan, 166, 250, 154)
+collectorSection.CanvasSize = UDim2.new(0, 0, 0, 390)
+
+do
+local carryFrame = Instance.new("Frame")
+carryFrame.Size = UDim2.new(1, 0, 0, 70)
+carryFrame.Position = UDim2.new(0, 0, 0, 296)
+carryFrame.BackgroundTransparency = 1
+carryFrame.Parent = collectorSection
+
+local carryLbl = Instance.new("TextLabel")
+carryLbl.Size = UDim2.new(0.7, 0, 0, 20)
+carryLbl.BackgroundTransparency = 1
+carryLbl.Text = "Eggs per trip"
+carryLbl.TextColor3 = UI.muted
+carryLbl.Font = Enum.Font.Gotham
+carryLbl.TextSize = 11
+carryLbl.TextXAlignment = Enum.TextXAlignment.Left
+carryLbl.Parent = carryFrame
+
+local carryValueLbl = Instance.new("TextLabel")
+carryValueLbl.Size = UDim2.new(0.3, 0, 0, 20)
+carryValueLbl.Position = UDim2.new(0.7, 0, 0, 0)
+carryValueLbl.BackgroundTransparency = 1
+carryValueLbl.Text = "1 / 6"
+carryValueLbl.TextColor3 = UI.cyan
+carryValueLbl.Font = Enum.Font.GothamBold
+carryValueLbl.TextSize = 11
+carryValueLbl.TextXAlignment = Enum.TextXAlignment.Right
+carryValueLbl.Parent = carryFrame
+
+local carryTrack = Instance.new("TextButton")
+carryTrack.Size = UDim2.new(1, 0, 0, 14)
+carryTrack.Position = UDim2.new(0, 0, 0, 33)
+carryTrack.BackgroundColor3 = UI.button
+carryTrack.BorderSizePixel = 0
+carryTrack.Text = ""
+carryTrack.Parent = carryFrame
+Instance.new("UICorner", carryTrack).CornerRadius = UDim.new(1, 0)
+
+local carryFill = Instance.new("Frame")
+carryFill.Size = UDim2.new(0, 0, 1, 0)
+carryFill.BackgroundColor3 = UI.cyan
+carryFill.BorderSizePixel = 0
+carryFill.Parent = carryTrack
+Instance.new("UICorner", carryFill).CornerRadius = UDim.new(1, 0)
+
+local carryKnob = Instance.new("TextButton")
+carryKnob.Size = UDim2.fromOffset(20, 20)
+carryKnob.Position = UDim2.new(0, -10, 0.5, -10)
+carryKnob.BackgroundColor3 = UI.text
+carryKnob.BorderSizePixel = 0
+carryKnob.Text = ""
+carryKnob.Parent = carryTrack
+Instance.new("UICorner", carryKnob).CornerRadius = UDim.new(1, 0)
+
+do
+    local dragging = false
+    local function setCarryAt(x)
+        if carryTrack.AbsoluteSize.X <= 0 then return end
+        local ratio = math.clamp((x - carryTrack.AbsolutePosition.X) / carryTrack.AbsoluteSize.X, 0, 1)
+        carryTarget = math.clamp(math.floor(ratio * 5 + 0.5) + 1, 1, 6)
+        local step = (carryTarget - 1) / 5
+        carryFill.Size = UDim2.new(step, 0, 1, 0)
+        carryKnob.Position = UDim2.new(step, -10, 0.5, -10)
+        carryValueLbl.Text = string.format("%d / 6", carryTarget)
+    end
+    local function beginDrag(input)
+        if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
+            dragging = true
+            setCarryAt(input.Position.X)
+        end
+    end
+    table.insert(runtime.connections, carryTrack.InputBegan:Connect(beginDrag))
+    table.insert(runtime.connections, carryKnob.InputBegan:Connect(beginDrag))
+    table.insert(runtime.connections, UIS.InputChanged:Connect(function(input)
+        if dragging and (input.UserInputType == Enum.UserInputType.MouseMovement or input.UserInputType == Enum.UserInputType.Touch) then
+            setCarryAt(input.Position.X)
+        end
+    end))
+    table.insert(runtime.connections, UIS.InputEnded:Connect(function(input)
+        if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
+            dragging = false
+        end
+    end))
+end
+end
 
 local delayFrame = Instance.new("Frame")
 delayFrame.Size = UDim2.new(1, 0, 0, 58)
@@ -1739,6 +1922,24 @@ trainingStatusLbl.Parent = trainingSection
 
 trainingBtn = mkBtn(trainingSection, "AUTO TRAIN X2: OFF", UI.amber, 0, 104, 154)
 local trainingOnceBtn = mkBtn(trainingSection, "CLAIM X2 NOW", UI.cyan, 166, 104, 154)
+
+seaStatusLbl = Instance.new("TextLabel")
+seaStatusLbl.Size = UDim2.new(1, 0, 0, 42)
+seaStatusLbl.Position = UDim2.new(0, 0, 0, 48)
+seaStatusLbl.BackgroundTransparency = 1
+seaStatusLbl.Text = "Waiting for sea edge"
+seaStatusLbl.TextColor3 = UI.muted
+seaStatusLbl.Font = Enum.Font.Gotham
+seaStatusLbl.TextSize = 11
+seaStatusLbl.TextWrapped = true
+seaStatusLbl.TextXAlignment = Enum.TextXAlignment.Left
+seaStatusLbl.TextYAlignment = Enum.TextYAlignment.Top
+seaStatusLbl.Parent = sections["Open Sea"]
+
+seaBtn = mkBtn(sections["Open Sea"], "AUTO OPEN SEA: OFF", UI.amber, 0, 104, 154)
+mkBtn(sections["Open Sea"], "OPEN ONCE", UI.cyan, 166, 104, 154).MouseButton1Click:Connect(function()
+    task.spawn(openSeaOnce)
+end)
 
 safeLbl = Instance.new("TextLabel")
 safeLbl.Size = UDim2.new(1, 0, 0, 36)
@@ -1859,6 +2060,18 @@ trainingOnceBtn.MouseButton1Click:Connect(function()
     claimTrainingX2()
 end)
 
+seaBtn.MouseButton1Click:Connect(function()
+    autoSeaOn = not autoSeaOn
+    updateSeaButton()
+    if autoSeaOn then
+        seaStatus("Waiting at sea edge", UI.green)
+        seaLoop()
+    else
+        seaLoopGeneration = seaLoopGeneration + 1
+        seaStatus("Auto Open Sea stopped", UI.muted)
+    end
+end)
+
 setSafeBtn.MouseButton1Click:Connect(function()
     if captureSafeZone() then
         updateSafeLabel()
@@ -1945,6 +2158,7 @@ updateDeepScanButton()
 updateESPButton()
 updateTrainingButton()
 updateTrainingStatus()
+updateSeaButton()
 updateRarityButtons()
 updateSafeLabel()
 updateCountLabel()

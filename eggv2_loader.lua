@@ -1,4 +1,4 @@
-local url = "https://raw.githubusercontent.com/Razahaider51216/devilscripthub/102f5e36323025ff960363ed490d33051b14bfad/eggv2.lua"
+local url = "https://raw.githubusercontent.com/Razahaider51216/devilscripthub/main/eggv2.lua"
 local player = game:GetService("Players").LocalPlayer
 local playerGui = player and player:WaitForChild("PlayerGui", 10)
 local statusLabel
