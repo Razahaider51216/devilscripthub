@@ -21,6 +21,7 @@ end
 
 local rf = {
     getQuests = remote("QuestService", "GetQuests"),
+    getZones = remote("ZoneHandler", "GetZones"),
     availability = remote("QuestService", "GetQuestAvailability"),
     talk = remote("QuestService", "TalkToNPC"),
     accept = remote("QuestService", "AcceptQuest"),
@@ -35,7 +36,7 @@ local state = {
     alive = true, combat = false, quests = false, mode = "Direct", selected = nil,
     lastQuestAction = 0, lastZoneMove = 0, travelUntil = 0, lastRefresh = 0, combo = 1, rejectedHits = 0,
     questStates = {}, connections = {}, currentTarget = nil,
-    availabilityCache = {}, rejectedQuests = {}, questBlocked = false,
+    availabilityCache = {}, rejectedQuests = {}, questBlocked = false, zoneProgress = {},
 }
 env.VANTA_PvPFarm = state
 
@@ -225,7 +226,7 @@ local function travelToPlan(plan)
 end
 
 local gui = Instance.new("ScreenGui")
-gui.Name = "VANTAPvPFarm"
+gui.Name = "ValenHub"
 gui.ResetOnSpawn = false
 gui.IgnoreGuiInset = true
 gui.DisplayOrder = 110
@@ -233,67 +234,182 @@ gui.Parent = playerGui
 
 local panel = Instance.new("Frame")
 panel.Name = "Panel"
-panel.Size = UDim2.fromOffset(320, 206)
-panel.Position = UDim2.new(1, -338, 0, 158)
-panel.BackgroundColor3 = Color3.fromRGB(25, 31, 37)
+panel.AnchorPoint = Vector2.new(0.5, 0.5)
+panel.Position = UDim2.fromScale(0.5, 0.5)
+panel.Size = UDim2.fromOffset(548, 344)
+panel.BackgroundColor3 = Color3.fromRGB(42, 43, 46)
 panel.BorderSizePixel = 0
 panel.Parent = gui
+local panelCorner = Instance.new("UICorner")
+panelCorner.CornerRadius = UDim.new(0, 8)
+panelCorner.Parent = panel
 local border = Instance.new("UIStroke")
-border.Color = Color3.fromRGB(80, 129, 113)
+border.Color = Color3.fromRGB(104, 130, 127)
 border.Thickness = 1
 border.Parent = panel
-
-local function textLabel(name, caption, y, height, color)
-    local label = Instance.new("TextLabel")
-    label.Name = name
-    label.Position = UDim2.fromOffset(12, y)
-    label.Size = UDim2.new(1, -24, 0, height)
-    label.BackgroundTransparency = 1
-    label.Font = Enum.Font.GothamMedium
-    label.TextSize = 13
-    label.TextXAlignment = Enum.TextXAlignment.Left
-    label.TextTruncate = Enum.TextTruncate.AtEnd
-    label.TextColor3 = color or Color3.fromRGB(227, 235, 233)
-    label.Text = caption
-    label.Parent = panel
-    return label
+local scale = Instance.new("UIScale")
+scale.Parent = panel
+local function fitPanel()
+    local camera = WS.CurrentCamera
+    if camera then
+        local size = camera.ViewportSize
+        scale.Scale = math.clamp(math.min((size.X - 24) / 548, (size.Y - 24) / 344), 0.35, 1)
+    end
+end
+fitPanel()
+if WS.CurrentCamera then
+    table.insert(state.connections, WS.CurrentCamera:GetPropertyChangedSignal("ViewportSize"):Connect(fitPanel))
 end
 
-local function button(name, caption, x, y, width)
-    local item = Instance.new("TextButton")
+local dock = Instance.new("TextButton")
+dock.Name = "OpenHub"
+dock.Position = UDim2.fromOffset(16, 140)
+dock.Size = UDim2.fromOffset(44, 44)
+dock.BackgroundColor3 = Color3.fromRGB(157, 91, 69)
+dock.TextColor3 = Color3.fromRGB(255, 255, 255)
+dock.Font = Enum.Font.GothamBold
+dock.TextSize = 18
+dock.Text = "V"
+dock.Visible = false
+dock.Parent = gui
+local dockCorner = Instance.new("UICorner")
+dockCorner.CornerRadius = UDim.new(0, 8)
+dockCorner.Parent = dock
+
+local function label(parent, name, caption, x, y, width, height, color)
+    local item = Instance.new("TextLabel")
     item.Name = name
     item.Position = UDim2.fromOffset(x, y)
-    item.Size = UDim2.fromOffset(width, 34)
-    item.BackgroundColor3 = Color3.fromRGB(48, 60, 68)
-    item.BorderSizePixel = 0
-    item.Font = Enum.Font.GothamBold
-    item.TextSize = 13
-    item.TextColor3 = Color3.fromRGB(237, 244, 240)
+    item.Size = UDim2.fromOffset(width, height)
+    item.BackgroundTransparency = 1
+    item.Font = Enum.Font.GothamMedium
+    item.TextSize = 14
+    item.TextXAlignment = Enum.TextXAlignment.Left
+    item.TextTruncate = Enum.TextTruncate.AtEnd
+    item.TextColor3 = color or Color3.fromRGB(237, 243, 243)
     item.Text = caption
-    item.Parent = panel
+    item.Parent = parent
     return item
 end
 
-local header = textLabel("Header", "AUTO FARM  /  PVE", 8, 22)
-header.TextSize = 16
+local function button(parent, name, caption, x, y, width, height)
+    local item = Instance.new("TextButton")
+    item.Name = name
+    item.Position = UDim2.fromOffset(x, y)
+    item.Size = UDim2.fromOffset(width, height)
+    item.BackgroundColor3 = Color3.fromRGB(60, 72, 80)
+    item.BorderSizePixel = 0
+    item.Font = Enum.Font.GothamBold
+    item.TextSize = 13
+    item.TextColor3 = Color3.fromRGB(245, 249, 248)
+    item.Text = caption
+    item.Parent = parent
+    local corner = Instance.new("UICorner")
+    corner.CornerRadius = UDim.new(0, 6)
+    corner.Parent = item
+    return item
+end
+
+local header = label(panel, "Header", "VALEN HUB", 16, 8, 450, 26)
+header.TextSize = 17
+header.Font = Enum.Font.GothamBold
 header.Active = true
-header.Size = UDim2.fromOffset(265, 22)
-local closeButton = Instance.new("TextButton")
-closeButton.Name = "Close"
-closeButton.Position = UDim2.fromOffset(283, 7)
-closeButton.Size = UDim2.fromOffset(25, 25)
-closeButton.BackgroundTransparency = 1
-closeButton.Text = "X"
-closeButton.TextSize = 16
-closeButton.Font = Enum.Font.GothamBold
-closeButton.TextColor3 = Color3.fromRGB(173, 190, 185)
-closeButton.Parent = panel
-local status = textLabel("Status", "Paused", 36, 25, Color3.fromRGB(157, 183, 174))
-local questLabel = textLabel("Quest", "Quest: none", 67, 20)
-local targetLabel = textLabel("Target", "Target: none", 91, 20)
-local combatButton = button("CombatToggle", "COMBAT: OFF", 12, 123, 145)
-local questButton = button("QuestToggle", "QUESTS: OFF", 163, 123, 145)
-local modeButton = button("Mode", "ATTACK: DIRECT", 12, 163, 296)
+local closeButton = button(panel, "Close", "X", 508, 7, 28, 28)
+closeButton.BackgroundColor3 = Color3.fromRGB(128, 70, 68)
+
+local sidebar = Instance.new("Frame")
+sidebar.Name = "Navigation"
+sidebar.Position = UDim2.fromOffset(0, 42)
+sidebar.Size = UDim2.fromOffset(137, 302)
+sidebar.BackgroundColor3 = Color3.fromRGB(33, 35, 37)
+sidebar.BorderSizePixel = 0
+sidebar.Parent = panel
+local content = Instance.new("Frame")
+content.Name = "Content"
+content.Position = UDim2.fromOffset(137, 42)
+content.Size = UDim2.fromOffset(411, 302)
+content.BackgroundTransparency = 1
+content.Parent = panel
+
+local pages, tabs = {}, {}
+for index, name in ipairs({ "Farm", "Quests", "Travel", "Live" }) do
+    local page = Instance.new("Frame")
+    page.Name = name
+    page.Size = UDim2.fromScale(1, 1)
+    page.BackgroundTransparency = 1
+    page.Visible = index == 1
+    page.Parent = content
+    pages[name] = page
+    local tab = button(sidebar, name .. "Tab", name, 10, 12 + (index - 1) * 47, 117, 38)
+    tab.TextXAlignment = Enum.TextXAlignment.Left
+    tab.TextSize = 14
+    local padding = Instance.new("UIPadding")
+    padding.PaddingLeft = UDim.new(0, 12)
+    padding.Parent = tab
+    tabs[name] = tab
+end
+local function showPage(name)
+    for key, page in pairs(pages) do
+        page.Visible = key == name
+        tabs[key].BackgroundColor3 = key == name and Color3.fromRGB(43, 118, 111)
+            or Color3.fromRGB(48, 58, 65)
+    end
+end
+for name, tab in pairs(tabs) do
+    table.insert(state.connections, tab.Activated:Connect(function() showPage(name) end))
+end
+showPage("Farm")
+
+local farmPage = pages.Farm
+label(farmPage, "FarmTitle", "AUTO FARM", 16, 14, 365, 26).TextSize = 18
+local status = label(farmPage, "Status", "Paused", 16, 50, 368, 48, Color3.fromRGB(117, 225, 194))
+status.TextWrapped = true
+status.TextTruncate = Enum.TextTruncate.None
+local questLabel = label(farmPage, "Quest", "Quest: none", 16, 106, 368, 22)
+local targetLabel = label(farmPage, "Target", "Target: none", 16, 134, 368, 22)
+local combatButton = button(farmPage, "CombatToggle", "COMBAT: OFF", 16, 182, 177, 38)
+local questButton = button(farmPage, "QuestToggle", "QUESTS: OFF", 206, 182, 177, 38)
+local modeButton = button(farmPage, "Mode", "ATTACK: DIRECT", 16, 230, 367, 38)
+modeButton.BackgroundColor3 = Color3.fromRGB(137, 87, 66)
+
+local questPage = pages.Quests
+label(questPage, "QuestTitle", "QUESTS", 16, 14, 365, 26).TextSize = 18
+local questScroll = Instance.new("ScrollingFrame")
+questScroll.Name = "QuestList"
+questScroll.Position = UDim2.fromOffset(16, 50)
+questScroll.Size = UDim2.fromOffset(374, 238)
+questScroll.BackgroundTransparency = 1
+questScroll.BorderSizePixel = 0
+questScroll.ScrollBarThickness = 4
+questScroll.ScrollBarImageColor3 = Color3.fromRGB(97, 170, 162)
+questScroll.Parent = questPage
+local questText = label(questScroll, "QuestText", "Loading...", 0, 0, 352, 220)
+questText.TextWrapped = true
+questText.TextTruncate = Enum.TextTruncate.None
+questText.TextYAlignment = Enum.TextYAlignment.Top
+
+local travelPage = pages.Travel
+label(travelPage, "TravelTitle", "TRAVEL", 16, 14, 265, 26).TextSize = 18
+local refreshTravelButton = button(travelPage, "RefreshTravel", "REFRESH", 290, 12, 99, 30)
+local travelScroll = Instance.new("ScrollingFrame")
+travelScroll.Name = "Waypoints"
+travelScroll.Position = UDim2.fromOffset(16, 50)
+travelScroll.Size = UDim2.fromOffset(374, 238)
+travelScroll.BackgroundTransparency = 1
+travelScroll.BorderSizePixel = 0
+travelScroll.ScrollBarThickness = 4
+travelScroll.ScrollBarImageColor3 = Color3.fromRGB(97, 170, 162)
+travelScroll.CanvasSize = UDim2.fromOffset(0, 442)
+travelScroll.Parent = travelPage
+
+local livePage = pages.Live
+label(livePage, "LiveTitle", "LIVE STATUS", 16, 14, 365, 26).TextSize = 18
+local levelLabel = label(livePage, "Level", "Level: ...", 16, 58, 370, 25)
+local enemiesLabel = label(livePage, "Enemies", "Loaded enemies: ...", 16, 94, 370, 25)
+local waypointLabel = label(livePage, "Waypoints", "Waypoints: ...", 16, 130, 370, 25)
+local storyLabel = label(livePage, "Story", "Story quest: ...", 16, 166, 370, 50)
+storyLabel.TextWrapped = true
+storyLabel.TextTruncate = Enum.TextTruncate.None
 
 local function setStatus(message)
     if state.alive then status.Text = message end
@@ -302,8 +418,8 @@ end
 local function refreshUi()
     combatButton.Text = state.combat and "COMBAT: ON" or "COMBAT: OFF"
     questButton.Text = state.quests and "QUESTS: ON" or "QUESTS: OFF"
-    combatButton.BackgroundColor3 = state.combat and Color3.fromRGB(36, 111, 84) or Color3.fromRGB(48, 60, 68)
-    questButton.BackgroundColor3 = state.quests and Color3.fromRGB(36, 111, 84) or Color3.fromRGB(48, 60, 68)
+    combatButton.BackgroundColor3 = state.combat and Color3.fromRGB(42, 125, 102) or Color3.fromRGB(60, 72, 80)
+    questButton.BackgroundColor3 = state.quests and Color3.fromRGB(42, 125, 102) or Color3.fromRGB(60, 72, 80)
     modeButton.Text = "ATTACK: " .. string.upper(state.mode)
 end
 
@@ -323,7 +439,14 @@ table.insert(state.connections, modeButton.Activated:Connect(function()
     state.rejectedHits = 0
     refreshUi()
 end))
-table.insert(state.connections, closeButton.Activated:Connect(function() state.stop() end))
+table.insert(state.connections, closeButton.Activated:Connect(function()
+    panel.Visible = false
+    dock.Visible = true
+end))
+table.insert(state.connections, dock.Activated:Connect(function()
+    panel.Visible = true
+    dock.Visible = false
+end))
 
 local dragging, dragStart, panelStart
 table.insert(state.connections, header.InputBegan:Connect(function(input)
@@ -335,14 +458,106 @@ table.insert(state.connections, header.InputBegan:Connect(function(input)
 end))
 table.insert(state.connections, UIS.InputChanged:Connect(function(input)
     if not dragging or (input.UserInputType ~= Enum.UserInputType.MouseMovement and input ~= dragging) then return end
+    local camera = WS.CurrentCamera
+    if not camera then return end
+    local viewport = camera.ViewportSize
     local delta = input.Position - dragStart
-    panel.Position = UDim2.new(panelStart.X.Scale, panelStart.X.Offset + delta.X,
-        panelStart.Y.Scale, panelStart.Y.Offset + delta.Y)
+    local x = panelStart.X.Scale * viewport.X + panelStart.X.Offset + delta.X
+    local y = panelStart.Y.Scale * viewport.Y + panelStart.Y.Offset + delta.Y
+    panel.Position = UDim2.fromOffset(math.clamp(x, 70, viewport.X - 70),
+        math.clamp(y, 24, viewport.Y - 24))
 end))
+
+local travelRows = {}
+for index = 1, 11 do
+    local islandName = "Island" .. index
+    local zone = zoneData[islandName]
+    local minLevel = zone and zone.Level and zone.Level.Min or "?"
+    local rowY = (index - 1) * 38
+    label(travelScroll, islandName .. "Label", islandName .. "  /  Lv." .. tostring(minLevel),
+        2, rowY + 5, 245, 26)
+    local go = button(travelScroll, islandName .. "Go", "LOCKED", 265, rowY, 86, 30)
+    travelRows[islandName] = go
+    table.insert(state.connections, go.Activated:Connect(function()
+        local unlocked = state.zoneProgress.TeleporterUnlocked
+        if not unlocked or unlocked["Waypoint_" .. islandName] ~= true then return end
+        local island = islands and islands:FindFirstChild(islandName)
+        local waypoint = island and island:FindFirstChild("Waypoint_" .. islandName)
+        local anchor = waypoint and (waypoint:FindFirstChild("Teleport", true)
+            or waypoint:FindFirstChild("TeleporterPurchasePart", true))
+        local position = anchor and modelPosition(anchor)
+        if not position then
+            setStatus("Waypoint not loaded: " .. islandName)
+            return
+        end
+        state.combat, state.quests = false, false
+        refreshUi()
+        if moveNear(position, 8) then
+            state.travelUntil = os.clock() + 2
+            setStatus("Travelled to " .. islandName)
+        else
+            setStatus("Cannot travel to " .. islandName)
+        end
+    end))
+end
+
+local function refreshTravel()
+    local ok, zones = invoke(rf.getZones)
+    if ok and type(zones) == "table" then
+        state.zoneProgress = zones
+    else
+        setStatus("Zone status unavailable")
+    end
+    local unlocked = state.zoneProgress.TeleporterUnlocked or {}
+    local count = 0
+    for islandName, go in pairs(travelRows) do
+        local available = unlocked["Waypoint_" .. islandName] == true
+        if available then count = count + 1 end
+        go.Text = available and "GO" or "LOCKED"
+        go.BackgroundColor3 = available and Color3.fromRGB(46, 128, 107)
+            or Color3.fromRGB(64, 69, 74)
+    end
+    waypointLabel.Text = "Waypoints unlocked: " .. count .. "/11"
+end
+
+local function refreshQuestView()
+    local lines = {}
+    for id, info in pairs(state.questStates) do
+        if type(info) == "table" and info.Ongoing then
+            local config = questData[id]
+            local title = config and config.EnemyType or id
+            lines[#lines + 1] = title .. "  /  " .. id
+        end
+    end
+    table.sort(lines)
+    questText.Text = #lines > 0 and table.concat(lines, "\n\n") or "No active quests"
+    local height = math.max(220, #lines * 52)
+    questText.Size = UDim2.fromOffset(352, height)
+    questScroll.CanvasSize = UDim2.fromOffset(0, height + 8)
+    local story
+    for id, info in pairs(state.questStates) do
+        if type(info) == "table" and info.Ongoing and not questData[id] then
+            story = id
+            break
+        end
+    end
+    storyLabel.Text = "Story quest: " .. (story or "none")
+end
+
+local function refreshLive()
+    levelLabel.Text = "Level: " .. tostring(level())
+    enemiesLabel.Text = "Loaded enemies: " .. tostring(#enemies:GetChildren())
+end
+
+table.insert(state.connections, refreshTravelButton.Activated:Connect(refreshTravel))
 
 local function refreshGameState()
     local questsOk, quests = invoke(rf.getQuests)
-    if questsOk and type(quests) == "table" then state.questStates = quests end
+    if questsOk and type(quests) == "table" then
+        state.questStates = quests
+        refreshQuestView()
+    end
+    refreshLive()
     state.lastRefresh = os.clock()
 end
 
@@ -600,8 +815,8 @@ end
 task.spawn(function()
     while state.alive do
         local ok, err = pcall(function()
+            if os.clock() - state.lastRefresh >= 3 then refreshGameState() end
             if (state.combat or state.quests) and os.clock() >= state.travelUntil then
-                if os.clock() - state.lastRefresh >= 3 then refreshGameState() end
                 manageQuest()
                 if state.combat and not state.questBlocked and os.clock() >= state.travelUntil then
                     local targetType = state.plan and state.plan.enemyType
@@ -627,4 +842,11 @@ task.spawn(function()
 end)
 
 refreshUi()
-print("[PvPFarm] Ready, paused. Quest mode farms the highest eligible zone spawn; no PvP targets.")
+task.spawn(function()
+    while state.alive do
+        local ok, err = pcall(refreshTravel)
+        if not ok then warn("[ValenHub] Travel refresh: " .. tostring(err)) end
+        task.wait(15)
+    end
+end)
+print("[ValenHub] Ready. Farm, quests, travel and live status are available.")
