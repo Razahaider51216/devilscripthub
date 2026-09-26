@@ -116,10 +116,6 @@ local trainingSentTokens = {}
 local trainingBonusRemote = nil
 local trainingBonusConnection = nil
 local trainingLoopGeneration = 0
-local autoSeaOn = false
-local seaBusy = false
-local seaLastAttempt = 0
-local seaLoopGeneration = 0
 local preTeleportDelay = 3.5
 local collectBusy = false
 local safeCFrame = nil
@@ -141,8 +137,6 @@ local espBtn
 local rarerModeBtn
 local trainingBtn
 local trainingStatusLbl
-local seaBtn
-local seaStatusLbl
 local rarityButtons = {}
 local selectedSummaryLbl
 local rarityListFrame
@@ -653,156 +647,6 @@ local function findTrainingRemote(remoteName, className)
     return nil
 end
 
-local function seaStatus(text, color)
-    if seaStatusLbl then
-        seaStatusLbl.Text = text
-        seaStatusLbl.TextColor3 = color or UI.muted
-    end
-end
-
-local function updateSeaButton()
-    if not seaBtn then return end
-    seaBtn.Text = autoSeaOn and "AUTO OPEN SEA: ON" or "AUTO OPEN SEA: OFF"
-    seaBtn.TextColor3 = autoSeaOn and UI.text or UI.amber
-    seaBtn.BackgroundColor3 = autoSeaOn and Color3.fromRGB(18, 72, 92) or UI.button
-end
-
-local function openSeaOnce()
-    if not runtime.active or seaBusy then return false end
-    if player:GetAttribute("IsWaveActive") == true then
-        seaStatus("Wave active", UI.green)
-        return false
-    end
-    if player:GetAttribute("InSeaEdge") ~= true then
-        seaStatus("Move to the sea edge", UI.amber)
-        return false
-    end
-    if os.clock() - seaLastAttempt < 4 then return false end
-
-    local button = gui:FindFirstChild("SeaStaffActionButton", true)
-    if not button or not button:IsA("GuiButton") or not button.Visible or button.AbsoluteSize.X <= 0 then
-        seaStatus("Sea Staff button not ready", UI.amber)
-        return false
-    end
-
-    seaBusy = true
-    seaLastAttempt = os.clock()
-    seaStatus("Holding Sea Staff charge", UI.cyan)
-    local point = button.AbsolutePosition + button.AbsoluteSize / 2
-    local drivers = {}
-    pcall(function()
-        local virtualInput = UIS:CreateVirtualInput()
-        if virtualInput then
-            drivers[#drivers + 1] = {
-                name = "VirtualInput",
-                send = function(down)
-                    virtualInput:SendMouseButton(point, Enum.UserInputType.MouseButton1, down, 0)
-                end,
-            }
-        end
-    end)
-    pcall(function()
-        local manager = game:GetService("VirtualInputManager")
-        if manager then
-            drivers[#drivers + 1] = {
-                name = "VirtualInputManager",
-                send = function(down)
-                    manager:SendMouseButtonEvent(point.X, point.Y, 0, down, game, 0)
-                end,
-            }
-        end
-    end)
-    if type(firesignal) == "function" or type(getconnections) == "function" then
-        local function sendSignal(signal, ...)
-            if type(firesignal) == "function" then
-                firesignal(signal, ...)
-                return
-            end
-            for _, connection in ipairs(getconnections(signal)) do
-                if type(connection.Fire) == "function" then
-                    connection:Fire(...)
-                elseif type(connection.Function) == "function" then
-                    connection.Function(...)
-                end
-            end
-        end
-        drivers[#drivers + 1] = {
-            name = "Button signals",
-            send = function(down)
-                if down then
-                    sendSignal(button.MouseButton1Down, point.X, point.Y)
-                else
-                    sendSignal(button.MouseButton1Up, point.X, point.Y)
-                    sendSignal(button.Activated, nil, 1)
-                end
-            end,
-        }
-    end
-
-    local panelWasVisible = panel and panel.Visible
-    if panelWasVisible then panel.Visible = false end
-    local charged, usedDriver = false, nil
-    for _, driver in ipairs(drivers) do
-        local pressed, pressError = pcall(driver.send, true)
-        if pressed then
-            local deadline = os.clock() + 2
-            while runtime.active and os.clock() < deadline do
-                local chargeBar = gui:FindFirstChild("ChargeBar", true)
-                local openTime = chargeBar and chargeBar:FindFirstChild("OpenTime", true)
-                if openTime and openTime:IsA("TextLabel") and openTime.Text:find("+5s Open Time", 1, true) then
-                    charged = true
-                    usedDriver = driver.name
-                    break
-                end
-                task.wait(0.03)
-            end
-            local released, releaseError = pcall(driver.send, false)
-            if not released then
-                warn("[VANTA V2] Sea input release failed:", driver.name, releaseError)
-            end
-            if charged then break end
-        else
-            warn("[VANTA V2] Sea input press failed:", driver.name, pressError)
-        end
-    end
-    if panelWasVisible and panel and panel.Parent and runtime.active then panel.Visible = true end
-
-    if charged then
-        local deadline = os.clock() + 3
-        while runtime.active and os.clock() < deadline do
-            if player:GetAttribute("IsWaveActive") == true then
-                seaBusy = false
-                seaStatus("Perfect charge: wave active", UI.green)
-                warn("[VANTA V2] Open Sea confirmed via", usedDriver)
-                return true
-            end
-            task.wait(0.1)
-        end
-    end
-    seaBusy = false
-    if #drivers == 0 then
-        seaStatus("Executor cannot send button input", UI.red)
-    elseif charged then
-        seaStatus("Charged +5s, but wave did not open", UI.red)
-    else
-        seaStatus("Sea Staff hold did not charge", UI.red)
-    end
-    return false
-end
-
-local function seaLoop()
-    seaLoopGeneration = seaLoopGeneration + 1
-    local generation = seaLoopGeneration
-    task.spawn(function()
-        while runtime.active and autoSeaOn and generation == seaLoopGeneration do
-            if not seaBusy then
-                openSeaOnce()
-            end
-            task.wait(0.4)
-        end
-    end)
-end
-
 local function trainingStatus(text, color)
     if trainingStatusLbl then
         trainingStatusLbl.Text = text
@@ -1101,13 +945,8 @@ collectEgg = function(egg)
     local current = egg
     local firstPickup = true
     local movedToEgg = false
-    local waveWasActive = player:GetAttribute("IsWaveActive") == true
 
     while runtime.active and current and pickedThisTrip < carryTarget do
-        if waveWasActive and player:GetAttribute("IsWaveActive") ~= true then
-            setStatus("Wave closed; returning safe", UI.amber)
-            break
-        end
         if not isTargetEgg(current) then break end
         local key = targetKey(current)
         if processed[key] and os.clock() - processed[key] < 20 then break end
@@ -1368,8 +1207,6 @@ runtime.stop = function()
     runtime.active = false
     autoOn = false
     trainingX2On = false
-    autoSeaOn = false
-    seaLoopGeneration = seaLoopGeneration + 1
     for _, connection in ipairs(runtime.connections) do
         connection:Disconnect()
     end
@@ -1556,7 +1393,6 @@ end
 local collectorSection = mkSection("Collector")
 local raritySection = mkSection("Filters")
 local trainingSection = mkSection("Training")
-mkSection("Open Sea")
 local safeSection = mkSection("Safe Zone")
 local visualSection = mkSection("Visual")
 
@@ -1607,7 +1443,6 @@ mkTab("Filters", 50)
 mkTab("Training", 90)
 mkTab("Safe Zone", 130)
 mkTab("Visual", 170)
-mkTab("Open Sea", 210)
 
 local function mkHeader(parent, title, subtitle)
     local h = Instance.new("TextLabel")
@@ -1654,7 +1489,6 @@ end
 mkHeader(collectorSection, "Auto Collector", "Collect eggs matching the selected filters")
 mkHeader(raritySection, "Egg Filters", "Selections in different groups must all match")
 mkHeader(trainingSection, "Training x2", "Auto claim the x2 training bonus when it appears")
-mkHeader(sections["Open Sea"], "Open Sea", "Perfect charge when standing at the sea edge")
 mkHeader(safeSection, "Safe Zone", "Return point after every pickup")
 mkHeader(visualSection, "Visual", "Target ESP and scan tools")
 
@@ -2020,24 +1854,6 @@ trainingStatusLbl.Parent = trainingSection
 trainingBtn = mkBtn(trainingSection, "AUTO TRAIN X2: OFF", UI.amber, 0, 104, 154)
 local trainingOnceBtn = mkBtn(trainingSection, "CLAIM X2 NOW", UI.cyan, 166, 104, 154)
 
-seaStatusLbl = Instance.new("TextLabel")
-seaStatusLbl.Size = UDim2.new(1, 0, 0, 42)
-seaStatusLbl.Position = UDim2.new(0, 0, 0, 48)
-seaStatusLbl.BackgroundTransparency = 1
-seaStatusLbl.Text = "Waiting for sea edge"
-seaStatusLbl.TextColor3 = UI.muted
-seaStatusLbl.Font = Enum.Font.Gotham
-seaStatusLbl.TextSize = 11
-seaStatusLbl.TextWrapped = true
-seaStatusLbl.TextXAlignment = Enum.TextXAlignment.Left
-seaStatusLbl.TextYAlignment = Enum.TextYAlignment.Top
-seaStatusLbl.Parent = sections["Open Sea"]
-
-seaBtn = mkBtn(sections["Open Sea"], "AUTO OPEN SEA: OFF", UI.amber, 0, 104, 154)
-mkBtn(sections["Open Sea"], "OPEN ONCE", UI.cyan, 166, 104, 154).MouseButton1Click:Connect(function()
-    task.spawn(openSeaOnce)
-end)
-
 safeLbl = Instance.new("TextLabel")
 safeLbl.Size = UDim2.new(1, 0, 0, 36)
 safeLbl.Position = UDim2.new(0, 0, 0, 48)
@@ -2157,18 +1973,6 @@ trainingOnceBtn.MouseButton1Click:Connect(function()
     claimTrainingX2()
 end)
 
-seaBtn.MouseButton1Click:Connect(function()
-    autoSeaOn = not autoSeaOn
-    updateSeaButton()
-    if autoSeaOn then
-        seaStatus("Waiting at sea edge", UI.green)
-        seaLoop()
-    else
-        seaLoopGeneration = seaLoopGeneration + 1
-        seaStatus("Auto Open Sea stopped", UI.muted)
-    end
-end)
-
 setSafeBtn.MouseButton1Click:Connect(function()
     if captureSafeZone() then
         updateSafeLabel()
@@ -2255,7 +2059,6 @@ updateDeepScanButton()
 updateESPButton()
 updateTrainingButton()
 updateTrainingStatus()
-updateSeaButton()
 updateRarityButtons()
 updateSafeLabel()
 updateCountLabel()
