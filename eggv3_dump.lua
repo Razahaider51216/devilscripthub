@@ -2,7 +2,6 @@
 
 local Players = game:GetService("Players")
 local RS = game:GetService("ReplicatedStorage")
-local WS = game:GetService("Workspace")
 local TextChatService = game:GetService("TextChatService")
 local player = Players.LocalPlayer
 local network = RS:WaitForChild("Packages", 10)
@@ -21,7 +20,9 @@ env.VANTA_EggV3Dump = state
 local events = {}
 local remotes = {}
 local captureSnapshots
-local lastSnapshotAt = 0
+local latestFieldSnapshot
+local latestRarityShows
+local snapshotQueued = false
 
 local function describe(value, depth, seen)
     depth = depth or 0
@@ -71,13 +72,20 @@ local function watchRemote(remote)
     remotes[remote] = true
     if remote:IsA("RemoteEvent") then
         table.insert(state.connections, remote.OnClientEvent:Connect(function(...)
-            log("IN " .. remote.Name, arguments(...))
-            if captureSnapshots and (remote.Name:find("FieldEggBatchShifted", 1, true)
-                or remote.Name:find("FieldEggRaritiesShown", 1, true)
-                or remote.Name:find("FieldEggShifted", 1, true))
-                and os.clock() - lastSnapshotAt > 1.5 then
-                lastSnapshotAt = os.clock()
-                task.delay(0.4, function()
+            local record = select(1, ...)
+            if remote.Name:find("FieldEggShifted", 1, true) then
+                if type(record) == "table" and record.State ~= "Slot" then
+                    log("IN " .. remote.Name, arguments(...))
+                end
+            else
+                log("IN " .. remote.Name, arguments(...))
+            end
+            if captureSnapshots and not snapshotQueued
+                and (remote.Name:find("FieldEggBatchShifted", 1, true)
+                    or remote.Name:find("FieldEggRaritiesShown", 1, true)) then
+                snapshotQueued = true
+                task.delay(0.6, function()
+                    snapshotQueued = false
                     if state.active then captureSnapshots("AFTER " .. remote.Name) end
                 end)
             end
@@ -112,20 +120,17 @@ if type(hookmetamethod) == "function" and type(getnamecallmethod) == "function" 
 end
 
 local function worldSnapshot(lines)
-    table.insert(lines, "--[[ EGG-LIKE WORKSPACE OBJECTS ]] ")
-    local count = 0
-    for _, inst in ipairs(WS:GetDescendants()) do
-        local name = inst.Name:lower()
-        if (inst:IsA("Model") or inst:IsA("BasePart"))
-            and (name:find("egg", 1, true) or inst:GetAttribute("EggId") or inst:GetAttribute("EggType")) then
-            count = count + 1
-            if count <= 120 then
-                local position = inst:IsA("BasePart") and inst.Position or inst:GetPivot().Position
-                table.insert(lines, string.format("-- %s pos=%s attrs=%s", inst:GetFullName(), describe(position), describe(inst:GetAttributes())))
-            end
-        end
+    table.insert(lines, "--[[ FIELD EGG SNAPSHOT ]] ")
+    local records = type(latestFieldSnapshot) == "table" and latestFieldSnapshot.Records or nil
+    table.insert(lines, "-- Record count: " .. tostring(type(records) == "table" and #records or 0))
+    for i, record in ipairs(type(records) == "table" and records or {}) do
+        if i > 150 then break end
+        local position = record.BottomCFrame or record.BoundsCFrame
+        table.insert(lines, string.format("-- %d uid=%s name=%s area=%s state=%s pos=%s mutation=%s",
+            i, tostring(record.Uid), tostring(record.AssetCategory), tostring(record.AreaId),
+            tostring(record.State), describe(position), describe(record.Mutations or record.BaseMutation)))
     end
-    table.insert(lines, "-- Count: " .. count)
+    table.insert(lines, "-- Rarity shows: " .. describe(latestRarityShows))
 end
 
 local function copyDump()
@@ -179,12 +184,21 @@ pcall(function()
 end)
 
 captureSnapshots = function(tag)
-    for _, name in ipairs({ "RF/EggWorld/AskFieldEggSnapshot", "RF/EggWorld/AskLiveSnapshot" }) do
+    for _, name in ipairs({ "RF/EggWorld/AskFieldEggSnapshot", "RF/EggWorld/AskFieldEggRarityShows" }) do
         local remote = network:FindFirstChild(name)
         if remote and remote:IsA("RemoteFunction") then
             task.spawn(function()
                 local ok, result = pcall(function() return remote:InvokeServer() end)
-                log(tag .. " " .. name, "ok=" .. tostring(ok) .. " result=" .. describe(result))
+                if ok and name:find("AskFieldEggSnapshot", 1, true) then
+                    latestFieldSnapshot = result
+                    local records = type(result) == "table" and result.Records or nil
+                    log(tag .. " " .. name, "records=" .. tostring(type(records) == "table" and #records or 0))
+                elseif ok then
+                    latestRarityShows = result
+                    log(tag .. " " .. name, describe(result))
+                else
+                    log(tag .. " " .. name, "error=" .. tostring(result))
+                end
             end)
         end
     end
