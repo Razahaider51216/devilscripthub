@@ -28,6 +28,7 @@ local state = {
     retries = setmetatable({}, { __mode = "k" }),
     attempts = 0, confirmed = 0, unconfirmed = 0, live = 0, carried = nil,
     safeCFrame = nil, safeSource = "unset", search = "", dirty = true,
+    flySpeed = 120,
 }
 env.DEVIL_CRATE_HUB = state
 
@@ -82,6 +83,8 @@ local function characterRoot()
     return character:FindFirstChild("HumanoidRootPart")
 end
 
+local log
+
 local function safeFromSpawn()
     local spawn = Workspace:FindFirstChildWhichIsA("SpawnLocation")
     if spawn then
@@ -91,14 +94,70 @@ local function safeFromSpawn()
 end
 safeFromSpawn()
 
-local function teleport(cf)
+local function flyTo(destination, labelText)
     local root = characterRoot()
-    if not root then return false end
-    local character = root.Parent
-    character:PivotTo(cf)
-    root.AssemblyLinearVelocity = Vector3.zero
-    root.AssemblyAngularVelocity = Vector3.zero
-    return true
+    if not root then return false, "Character unavailable" end
+    local attachment = Instance.new("Attachment")
+    attachment.Name = "DevilHubFlightAttachment"
+    attachment.Parent = root
+    local mover = Instance.new("LinearVelocity")
+    mover.Name = "DevilHubFlight"
+    mover.Attachment0 = attachment
+    mover.RelativeTo = Enum.ActuatorRelativeTo.World
+    mover.VelocityConstraintMode = Enum.VelocityConstraintMode.Vector
+    mover.ForceLimitsEnabled = false
+    mover.MaxForce = 1000000000
+    mover.VectorVelocity = Vector3.zero
+    mover.Parent = root
+
+    local hoverY = math.max(root.Position.Y, destination.Y) + 12
+    local waypoints = {
+        Vector3.new(root.Position.X, hoverY, root.Position.Z),
+        Vector3.new(destination.X, hoverY, destination.Z),
+        destination,
+    }
+    local success, reason = true, nil
+    local lastProgress, lastLog = os.clock(), os.clock()
+    for _, waypoint in ipairs(waypoints) do
+        local distance = (waypoint - root.Position).Magnitude
+        local bestDistance = distance
+        lastProgress = os.clock()
+        local deadline = os.clock() + math.max(10, distance / state.flySpeed * 5 + 8)
+        while (waypoint - root.Position).Magnitude > 4 do
+            if not state.alive or not characterRoot() or root ~= characterRoot() then
+                success, reason = false, "Character changed"
+                break
+            end
+            if os.clock() > deadline then
+                success, reason = false, "Flight timed out"
+                break
+            end
+            local delta = waypoint - root.Position
+            mover.VectorVelocity = delta.Unit * math.min(state.flySpeed, math.max(25, delta.Magnitude * 3))
+            task.wait(0.08)
+            local remaining = (waypoint - root.Position).Magnitude
+            if remaining < bestDistance - 2 then
+                bestDistance = remaining
+                lastProgress = os.clock()
+            elseif os.clock() - lastProgress > 5 then
+                success, reason = false, "No progress toward target; movement may be blocked"
+                break
+            end
+            if os.clock() - lastLog > 5 then
+                log(string.format("Flying %s / %.0f studs left", labelText,
+                    (waypoint - root.Position).Magnitude))
+                lastLog = os.clock()
+            end
+        end
+        if not success then break end
+    end
+    mover:Destroy()
+    attachment:Destroy()
+    if root.Parent then root.AssemblyLinearVelocity = Vector3.zero end
+    if success and (root.Position - destination).Magnitude > 9 then
+        return false, "Did not reach target"
+    end
+    return success, reason
 end
 
 local function round(parent, radius)
@@ -228,7 +287,7 @@ autoScroll.Size = UDim2.fromScale(1, 1)
 autoScroll.BackgroundTransparency = 1
 autoScroll.BorderSizePixel = 0
 autoScroll.ScrollBarThickness = 3
-autoScroll.CanvasSize = UDim2.fromOffset(0, 360)
+autoScroll.CanvasSize = UDim2.fromOffset(0, 410)
 autoScroll.Parent = pages.AUTO
 label(autoScroll, "AutoTitle", "AUTO COLLECT", 0, 32).Font = Enum.Font.GothamBold
 local toggle = button(autoScroll, "AutoToggle", "OFF")
@@ -246,7 +305,22 @@ once.Size = UDim2.new(0.5, -7, 0, 38)
 local scanNow = button(autoScroll, "ScanNow", "REFRESH")
 scanNow.Position = UDim2.new(0.5, 3, 0, 238)
 scanNow.Size = UDim2.new(0.5, -7, 0, 38)
-label(autoScroll, "SafeHint", "Return point: SpawnLocation", 293, 34, C.muted)
+label(autoScroll, "SpeedLabel", "FLIGHT SPEED", 291, 32, C.muted)
+local speedInput = Instance.new("TextBox")
+speedInput.Name = "FlightSpeed"
+speedInput.Position = UDim2.new(1, -114, 0, 291)
+speedInput.Size = UDim2.fromOffset(108, 34)
+speedInput.BackgroundColor3 = C.surface
+speedInput.BackgroundTransparency = 0.12
+speedInput.BorderSizePixel = 0
+speedInput.TextColor3 = C.white
+speedInput.Text = "120"
+speedInput.ClearTextOnFocus = false
+speedInput.Font = Enum.Font.GothamMedium
+speedInput.TextSize = 14
+speedInput.Parent = autoScroll
+round(speedInput)
+label(autoScroll, "SafeHint", "Return point: SpawnLocation", 343, 34, C.muted)
 
 local search = Instance.new("TextBox")
 search.Name = "Search"
@@ -307,7 +381,7 @@ logText.TextColor3 = C.muted
 logText.TextWrapped = true
 logText.TextYAlignment = Enum.TextYAlignment.Top
 
-local function log(message)
+log = function(message)
     local line = os.date("%H:%M:%S") .. "  " .. tostring(message)
     state.logs[#state.logs + 1] = line
     if #state.logs > 80 then table.remove(state.logs, 1) end
@@ -381,8 +455,8 @@ local function renderCrates()
         if item.maxKg and item.maxKg ~= item.minKg then
             weight = weight .. "-" .. kgText(item.maxKg)
         end
-        local meta = makeText("TextLabel", row, "Meta", "Live " .. item.live
-            .. "  |  " .. weight .. " kg  |  " .. item.size, 11)
+        local meta = makeText("TextLabel", row, "Meta", "Live " .. (item.live or 0)
+            .. "  |  " .. weight .. " kg  |  " .. (item.size or "Unknown"), 11)
         meta.Position = UDim2.fromOffset(48, 25)
         meta.Size = UDim2.new(1, -56, 0, 20)
         meta.TextColor3 = C.muted
@@ -496,15 +570,9 @@ local function collect(model)
     log("Going to " .. name)
     local picked = false
     local ok, err = pcall(function()
-        local root = characterRoot()
-        if not root then error("Character unavailable") end
-        local destination = CFrame.lookAt(target + Vector3.new(0, 4, 0), target)
-        if not teleport(destination) then error("Teleport failed") end
-        task.wait(0.5)
-        root = characterRoot()
-        if not root or (root.Position - destination.Position).Magnitude > 12 then
-            error("Teleport did not stick")
-        end
+        local reached, reason = flyTo(target + Vector3.new(0, 4, 0), name)
+        if not reached then error(reason) end
+        if not liveCrate(model) then error("Crate unavailable on arrival") end
         local prompt = promptFor(model)
         if not prompt then error("Crate prompt disappeared") end
         activatePrompt(prompt)
@@ -521,8 +589,12 @@ local function collect(model)
             log("Picked up " .. name .. " / returning to safe zone")
         end
     end)
-    local returned = teleport(state.safeCFrame)
-    if not returned then log("Return failed: character unavailable") end
+    local returnOk, returned, returnReason = pcall(flyTo, state.safeCFrame.Position, "safe zone")
+    if not returnOk then
+        log("Return error: " .. tostring(returned):sub(1, 110))
+    elseif not returned then
+        log("Return failed: " .. tostring(returnReason))
+    end
     if not ok then
         state.unconfirmed = state.unconfirmed + 1
         log("Interaction error: " .. tostring(err):sub(1, 110))
@@ -611,6 +683,11 @@ table.insert(state.connections, toggle.Activated:Connect(function()
     toggle.TextColor3 = state.enabled and C.accent or C.white
     log(state.enabled and "Auto collect on" or "Auto collect off")
 end))
+table.insert(state.connections, speedInput.FocusLost:Connect(function()
+    state.flySpeed = math.clamp(tonumber(speedInput.Text) or 120, 30, 220)
+    speedInput.Text = tostring(state.flySpeed)
+    log("Flight speed: " .. state.flySpeed)
+end))
 table.insert(state.connections, prioritize.Activated:Connect(function()
     state.rareFirst = not state.rareFirst
     prioritize.Text = state.rareFirst and "RARE FIRST: ON" or "RARE FIRST: OFF"
@@ -662,11 +739,24 @@ table.insert(state.connections, resetSafe.Activated:Connect(function()
     log(state.safeCFrame and "Safe zone set to spawn" or "SpawnLocation unavailable")
 end))
 table.insert(state.connections, returnSafe.Activated:Connect(function()
-    if state.safeCFrame and teleport(state.safeCFrame) then
-        log("Returned to safe zone")
-    else
-        log("Safe return unavailable")
+    if state.busy then
+        log("Already moving")
+        return
     end
+    if not state.safeCFrame then
+        log("Safe return unavailable")
+        return
+    end
+    state.busy = true
+    task.spawn(function()
+        local ok, reached, reason = pcall(flyTo, state.safeCFrame.Position, "safe zone")
+        state.busy = false
+        if not ok then
+            log("Return error: " .. tostring(reached):sub(1, 110))
+        else
+            log(reached and "Returned to safe zone" or ("Return failed: " .. tostring(reason)))
+        end
+    end)
 end))
 table.insert(state.connections, copyLog.Activated:Connect(function()
     local copy = setclipboard or toclipboard or set_clipboard
