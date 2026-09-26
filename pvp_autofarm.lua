@@ -21,6 +21,7 @@ end
 
 local rf = {
     getQuests = remote("QuestService", "GetQuests"),
+    availability = remote("QuestService", "GetQuestAvailability"),
     talk = remote("QuestService", "TalkToNPC"),
     accept = remote("QuestService", "AcceptQuest"),
     complete = remote("QuestService", "CompleteQuest"),
@@ -35,6 +36,7 @@ local state = {
     alive = true, combat = false, quests = false, mode = "Direct", selected = nil,
     lastQuestAction = 0, lastZoneMove = 0, travelUntil = 0, lastRefresh = 0, combo = 1, rejectedHits = 0,
     questStates = {}, unlocked = {}, connections = {}, currentTarget = nil,
+    availabilityCache = {}, rejectedQuests = {},
 }
 env.VANTA_PvPFarm = state
 
@@ -113,19 +115,6 @@ local function findNpc(id)
     return inst and inst:IsA("Model") and inst or nil
 end
 
-local function islandOf(inst)
-    while inst and inst.Parent do
-        if inst.Parent == islands then return inst.Name end
-        inst = inst.Parent
-    end
-    return nil
-end
-
-local function isUnlocked(npc)
-    local island = islandOf(npc)
-    return not island or state.unlocked[island] == true
-end
-
 local function activeKillQuest()
     for id, info in pairs(state.questStates) do
         local config = questData[id]
@@ -134,15 +123,34 @@ local function activeKillQuest()
     return nil
 end
 
+local function meetsQuestLevel(config)
+    local first = config.Quests and config.Quests[1]
+    local dialogue = type(first) == "table" and first.DialogueRequirement
+    local required = (type(dialogue) == "table" and tonumber(dialogue.Level))
+        or tonumber(config.RecommendedLevel) or 0
+    return level() >= required
+end
+
+local function questAvailable(id)
+    local cached = state.availabilityCache[id]
+    if cached and os.clock() - cached.at < 5 then return cached.available end
+    local ok, result = invoke(rf.availability, id)
+    local available = ok and type(result) == "table" and result.Available == true
+    state.availabilityCache[id] = { at = os.clock(), available = available,
+        reason = type(result) == "table" and result.Reason or tostring(result) }
+    return available
+end
+
 local function chooseQuest()
     local best, bestLevel
     for id, config in pairs(questData) do
-        if type(config) == "table" and type(config.EnemyType) == "string" then
+        if type(config) == "table" and type(config.EnemyType) == "string"
+            and meetsQuestLevel(config) and (state.rejectedQuests[id] or 0) <= os.clock() then
             local npc = findNpc(id)
             local mob = nearestEnemy(config.EnemyType)
-            if npc and mob and isUnlocked(npc) then
+            if npc and mob then
                 local mobLevel = tonumber(mob:GetAttribute("Level")) or 0
-                if not bestLevel or mobLevel > bestLevel then
+                if (not bestLevel or mobLevel > bestLevel) and questAvailable(id) then
                     best, bestLevel = { id = id, config = config, npc = npc, mobLevel = mobLevel }, mobLevel
                 end
             end
@@ -358,19 +366,38 @@ local function manageQuest()
     if preferred and (not id or not currentMob or preferred.mobLevel > currentLevel + 40) then
         if os.clock() - state.lastQuestAction >= 8 then
             local npcPosition = modelPosition(preferred.npc)
-            if not moveNear(npcPosition, 11) then setStatus("Cannot reach quest NPC"); return id, config end
+            if not moveNear(npcPosition, 5) then setStatus("Cannot reach quest NPC"); return id, config end
             state.lastQuestAction = os.clock()
-            invoke(rf.talk, preferred.id)
-            task.wait(0.2)
+            setStatus("Talking to " .. preferred.id)
+            task.wait(0.8)
+            if not state.alive or not state.quests then return id, config end
+            local talked, talkResult = invoke(rf.talk, preferred.id)
+            if not talked or talkResult == false then
+                state.rejectedQuests[preferred.id] = os.clock() + 30
+                setStatus("NPC talk failed: " .. preferred.id)
+                return id, config
+            end
+            task.wait(2.5)
+            if not state.alive or not state.quests then return id, config end
             local ok, result = invoke(rf.accept, preferred.id)
-            refreshGameState()
-            local accepted = state.questStates[preferred.id] and state.questStates[preferred.id].Ongoing
-            setStatus(ok and result ~= false and accepted and ("Quest active: " .. preferred.id)
-                or ("Quest not accepted: " .. preferred.id))
+            local accepted = false
+            for _ = 1, 4 do
+                task.wait(0.4)
+                refreshGameState()
+                accepted = state.questStates[preferred.id] and state.questStates[preferred.id].Ongoing == true
+                if accepted then break end
+            end
             if accepted then
+                state.rejectedQuests[preferred.id] = nil
+                setStatus("Quest active: " .. preferred.id)
                 questLabel.Text = "Quest: " .. preferred.id
                 return preferred.id, preferred.config
             end
+            warn("[PvPFarm] AcceptQuest " .. preferred.id .. " failed: callOk=" .. tostring(ok)
+                .. " result=" .. tostring(result) .. " available="
+                .. tostring(questAvailable(preferred.id)))
+            setStatus("Quest not accepted: " .. preferred.id)
+            state.rejectedQuests[preferred.id] = os.clock() + 30
         end
         return id, config
     end
