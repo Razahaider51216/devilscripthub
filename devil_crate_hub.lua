@@ -28,7 +28,7 @@ local state = {
     retries = setmetatable({}, { __mode = "k" }),
     attempts = 0, confirmed = 0, unconfirmed = 0, live = 0, carried = nil,
     safeCFrame = nil, safeSource = "unset", search = "", dirty = true,
-    flySpeed = 120,
+    flySpeed = 120, tripToken = 0,
 }
 env.DEVIL_CRATE_HUB = state
 
@@ -94,7 +94,7 @@ local function safeFromSpawn()
 end
 safeFromSpawn()
 
-local function flyTo(destination, labelText)
+local function flyTo(destination, labelText, tripToken, safeMode)
     local root = characterRoot()
     if not root then return false, "Character unavailable" end
     local attachment = Instance.new("Attachment")
@@ -110,20 +110,27 @@ local function flyTo(destination, labelText)
     mover.VectorVelocity = Vector3.zero
     mover.Parent = root
 
-    local hoverY = math.max(root.Position.Y, destination.Y) + 12
+    local hoverY = math.max(root.Position.Y, destination.Y) + 8
     local waypoints = {
         Vector3.new(root.Position.X, hoverY, root.Position.Z),
         Vector3.new(destination.X, hoverY, destination.Z),
-        destination,
     }
+    if not safeMode then waypoints[#waypoints + 1] = destination end
     local success, reason = true, nil
     local lastProgress, lastLog = os.clock(), os.clock()
+    local speedLimit = state.flySpeed
+    local corrections = 0
     for _, waypoint in ipairs(waypoints) do
         local distance = (waypoint - root.Position).Magnitude
         local bestDistance = distance
         lastProgress = os.clock()
         local deadline = os.clock() + math.max(10, distance / state.flySpeed * 5 + 8)
-        while (waypoint - root.Position).Magnitude > 4 do
+        local tolerance = waypoint == destination and 6 or 4
+        while (waypoint - root.Position).Magnitude > tolerance do
+            if tripToken ~= state.tripToken then
+                success, reason = false, "Cancelled"
+                break
+            end
             if not state.alive or not characterRoot() or root ~= characterRoot() then
                 success, reason = false, "Character changed"
                 break
@@ -133,12 +140,24 @@ local function flyTo(destination, labelText)
                 break
             end
             local delta = waypoint - root.Position
-            mover.VectorVelocity = delta.Unit * math.min(state.flySpeed, math.max(25, delta.Magnitude * 3))
+            mover.VectorVelocity = delta.Unit
+                * math.min(state.flySpeed, speedLimit, math.max(25, delta.Magnitude * 3))
             task.wait(0.08)
             local remaining = (waypoint - root.Position).Magnitude
             if remaining < bestDistance - 2 then
                 bestDistance = remaining
                 lastProgress = os.clock()
+            elseif remaining > bestDistance + 75 then
+                corrections = corrections + 1
+                if corrections >= 4 then
+                    success, reason = false, "Position repeatedly corrected by the game"
+                    break
+                end
+                speedLimit = math.max(35, speedLimit * 0.6)
+                bestDistance = remaining
+                lastProgress = os.clock()
+                deadline = os.clock() + math.max(10, remaining / speedLimit * 5 + 8)
+                log(string.format("Position corrected; flight speed reduced to %.0f", speedLimit))
             elseif os.clock() - lastProgress > 5 then
                 success, reason = false, "No progress toward target; movement may be blocked"
                 break
@@ -154,7 +173,14 @@ local function flyTo(destination, labelText)
     mover:Destroy()
     attachment:Destroy()
     if root.Parent then root.AssemblyLinearVelocity = Vector3.zero end
-    if success and (root.Position - destination).Magnitude > 9 then
+    if success and safeMode then
+        task.wait(0.8)
+        local horizontal = Vector3.new(root.Position.X - destination.X, 0,
+            root.Position.Z - destination.Z).Magnitude
+        if horizontal <= 24 then return true end
+        return false, "Safe zone not reached"
+    end
+    if success and (root.Position - destination).Magnitude > 10 then
         return false, "Did not reach target"
     end
     return success, reason
@@ -567,11 +593,14 @@ local function collect(model)
     updateStats()
     local name = model.Name
     local target = model:GetPivot().Position
+    local tripToken = state.tripToken
     log("Going to " .. name)
     local picked = false
     local ok, err = pcall(function()
-        local reached, reason = flyTo(target + Vector3.new(0, 4, 0), name)
+        local reached, reason = flyTo(target + Vector3.new(0, 4, 0), name,
+            tripToken, false)
         if not reached then error(reason) end
+        if tripToken ~= state.tripToken then error("Cancelled") end
         if not liveCrate(model) then error("Crate unavailable on arrival") end
         local prompt = promptFor(model)
         if not prompt then error("Crate prompt disappeared") end
@@ -589,7 +618,15 @@ local function collect(model)
             log("Picked up " .. name .. " / returning to safe zone")
         end
     end)
-    local returnOk, returned, returnReason = pcall(flyTo, state.safeCFrame.Position, "safe zone")
+    if not ok and tostring(err):find("Cancelled", 1, true) then
+        state.retries[model] = math.max(0, (state.retries[model] or 1) - 1)
+        state.lastAttempt[model] = nil
+        state.busy = false
+        log("Trip cancelled")
+        return
+    end
+    local returnOk, returned, returnReason = pcall(flyTo, state.safeCFrame.Position,
+        "safe zone", state.tripToken, true)
     if not returnOk then
         log("Return error: " .. tostring(returned):sub(1, 110))
     elseif not returned then
@@ -678,6 +715,7 @@ table.insert(state.connections, dock.Activated:Connect(function()
 end))
 table.insert(state.connections, toggle.Activated:Connect(function()
     state.enabled = not state.enabled
+    if not state.enabled then state.tripToken = state.tripToken + 1 end
     toggle.Text = state.enabled and "ON" or "OFF"
     toggle.BackgroundColor3 = state.enabled and C.surfaceOn or C.surface
     toggle.TextColor3 = state.enabled and C.accent or C.white
@@ -748,8 +786,10 @@ table.insert(state.connections, returnSafe.Activated:Connect(function()
         return
     end
     state.busy = true
+    local tripToken = state.tripToken
     task.spawn(function()
-        local ok, reached, reason = pcall(flyTo, state.safeCFrame.Position, "safe zone")
+        local ok, reached, reason = pcall(flyTo, state.safeCFrame.Position,
+            "safe zone", tripToken, true)
         state.busy = false
         if not ok then
             log("Return error: " .. tostring(reached):sub(1, 110))
@@ -771,6 +811,7 @@ state.stop = function()
     if not state.alive then return end
     state.alive = false
     state.enabled = false
+    state.tripToken = state.tripToken + 1
     for _, connection in ipairs(state.connections) do connection:Disconnect() end
     for _, connection in ipairs(state.rowConnections) do connection:Disconnect() end
     gui:Destroy()
