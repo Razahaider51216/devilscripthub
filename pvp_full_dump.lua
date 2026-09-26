@@ -127,6 +127,16 @@ local function run()
     local zonesOk, zoneData = moduleRead("Zones")
     summary.questData = questsOk and plain(questData) or { error = tostring(questData) }
     summary.zoneData = zonesOk and plain(zoneData) or { error = tostring(zoneData) }
+    summary.storyQuestData = {}
+    local onboarding = child(RS, "Database", "QuestInfo", "Onboarding")
+    if onboarding then
+        for _, module in ipairs(onboarding:GetChildren()) do
+            if module:IsA("ModuleScript") then
+                local ok, data = moduleRead("QuestInfo", "Onboarding", module.Name)
+                summary.storyQuestData[module.Name] = ok and plain(data) or { error = tostring(data) }
+            end
+        end
+    end
 
     local stateOk, questState = serviceRead("QuestService", "GetQuests")
     summary.questState = stateOk and plain(questState) or { error = tostring(questState) }
@@ -144,7 +154,7 @@ local function run()
     local seenEnemies = {}
     local function recordVisible(zoneName)
         for _, inst in ipairs(WS:GetChildren()) do
-            if inst:IsA("Model") and inst:GetAttribute("EnemyType") then
+            if inst:IsA("Model") and (inst:GetAttribute("EnemyType") or inst:GetAttribute("Id")) then
                 summary.npcs[pathOf(inst)] = {
                     id = inst:GetAttribute("Id"), enemyType = inst:GetAttribute("EnemyType"),
                     zoneSeen = zoneName, position = plain(positionOf(inst)), attributes = attrs(inst),
@@ -198,7 +208,7 @@ local function run()
             end
         end
         for _, inst in ipairs(islands:GetDescendants()) do
-            if inst:IsA("Model") and inst:GetAttribute("EnemyType") then
+            if inst:IsA("Model") and (inst:GetAttribute("EnemyType") or inst:GetAttribute("Id")) then
                 summary.npcs[pathOf(inst)] = {
                     id = inst:GetAttribute("Id"), enemyType = inst:GetAttribute("EnemyType"),
                     position = plain(positionOf(inst)), attributes = attrs(inst),

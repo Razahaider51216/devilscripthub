@@ -35,7 +35,7 @@ local state = {
     alive = true, combat = false, quests = false, mode = "Direct", selected = nil,
     lastQuestAction = 0, lastZoneMove = 0, travelUntil = 0, lastRefresh = 0, combo = 1, rejectedHits = 0,
     questStates = {}, connections = {}, currentTarget = nil,
-    availabilityCache = {}, rejectedQuests = {},
+    availabilityCache = {}, rejectedQuests = {}, questBlocked = false,
 }
 env.VANTA_PvPFarm = state
 
@@ -359,6 +359,7 @@ local function waitForQuest(id, checks, delay)
 end
 
 local function manageQuest()
+    state.questBlocked = false
     local id, config, info = activeKillQuest()
     local currentMob = config and nearestEnemy(config.EnemyType)
     local plan = selectFarmPlan()
@@ -374,12 +375,21 @@ local function manageQuest()
         setStatus("No zone monster at a safe level")
         return nil, nil
     end
+    local preferred = plan.quest
+    if state.quests and preferred and not questAvailable(preferred.id) then
+        local cached = state.availabilityCache[preferred.id]
+        local reason = cached and cached.reason or "unavailable"
+        state.questBlocked = true
+        questLabel.Text = "Quest locked: " .. preferred.id
+        targetLabel.Text = "Target: paused"
+        setStatus(tostring(reason):sub(1, 90))
+        return nil, nil
+    end
     if travelToPlan(plan) then
         setStatus("Traveling to " .. plan.zone .. " for " .. plan.enemyType)
         targetLabel.Text = "Target: loading " .. plan.enemyType
         return nil, nil
     end
-    local preferred = plan.quest
     if preferred then preferred.npc = findNpc(preferred.id) end
     if not nearestEnemy(plan.enemyType) and preferred and preferred.npc
         and os.clock() - state.lastZoneMove >= 5 then
@@ -593,7 +603,7 @@ task.spawn(function()
             if (state.combat or state.quests) and os.clock() >= state.travelUntil then
                 if os.clock() - state.lastRefresh >= 3 then refreshGameState() end
                 manageQuest()
-                if state.combat and os.clock() >= state.travelUntil then
+                if state.combat and not state.questBlocked and os.clock() >= state.travelUntil then
                     local targetType = state.plan and state.plan.enemyType
                     local enemy = targetType and nearestEnemy(targetType)
                     if enemy then
