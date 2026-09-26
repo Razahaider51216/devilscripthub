@@ -92,19 +92,6 @@ local function nearestEnemy(enemyType)
     return chosen
 end
 
-local function strongestEnemyType()
-    local bestType, bestLevel
-    for _, model in ipairs(enemies:GetChildren()) do
-        if livingEnemy(model) then
-            local mobLevel = tonumber(model:GetAttribute("Level")) or 0
-            if mobLevel <= level() + 25 and (not bestLevel or mobLevel > bestLevel) then
-                bestType, bestLevel = model.Name, mobLevel
-            end
-        end
-    end
-    return bestType
-end
-
 local function findNpc(id)
     if islands then
         local inst = islands:FindFirstChild(id, true)
@@ -130,19 +117,6 @@ local function activeKillQuest()
     return nil
 end
 
-local function questLevel(config, npc)
-    local first = config.Quests and config.Quests[1]
-    local dialogue = type(first) == "table" and first.DialogueRequirement
-    local dialogueLevel = type(dialogue) == "table" and tonumber(dialogue.Level) or nil
-    local recommended = tonumber(config.RecommendedLevel)
-    local island = islandOf(npc)
-    local zone = island and zoneData[island]
-    local zoneMinimum = zone and zone.Level and tonumber(zone.Level.Min)
-    local minimum = dialogueLevel or recommended or zoneMinimum
-    if not minimum then return nil end
-    return math.max(minimum, recommended or 0, zoneMinimum or 0), minimum
-end
-
 local function questAvailable(id)
     local cached = state.availabilityCache[id]
     if cached and os.clock() - cached.at < 5 then return cached.available end
@@ -153,18 +127,39 @@ local function questAvailable(id)
     return available
 end
 
-local function chooseQuest()
+local function questForEnemy(zoneName, enemyType)
+    local baseIsland = zoneName:match("^(Island%d+)")
+    for id, config in pairs(questData) do
+        if type(config) == "table" and config.EnemyType == enemyType then
+            local npc = findNpc(id)
+            local npcIsland = id:match("^(Island%d+)") or islandOf(npc)
+            if npcIsland == baseIsland then
+                return { id = id, config = config, npc = npc }
+            end
+        end
+    end
+    return nil
+end
+
+local function selectFarmPlan()
     local best
     local playerLevel = level()
-    for id, config in pairs(questData) do
-        if type(config) == "table" and type(config.EnemyType) == "string" then
-            local npc = findNpc(id)
-            if npc then
-                local rank, minimum = questLevel(config, npc)
-                if rank and minimum <= playerLevel and rank <= playerLevel + 25
-                    and (not best or rank > best.questLevel
-                        or (rank == best.questLevel and id < best.id)) then
-                    best = { id = id, config = config, npc = npc, questLevel = rank }
+    for zoneName, zone in pairs(zoneData) do
+        if type(zoneName) == "string" and zoneName:match("^Island%d+") and type(zone) == "table"
+            and type(zone.CustomEnemiesBySpawnName) == "table"
+            and type(zone.CustomLevelBySpawnName) == "table" then
+            for spawnName, enemyNames in pairs(zone.CustomEnemiesBySpawnName) do
+                local levelData = zone.CustomLevelBySpawnName[spawnName]
+                local mobLevel = levelData and tonumber(levelData.Min)
+                if mobLevel and mobLevel <= playerLevel + 25 and type(enemyNames) == "table" then
+                    for _, enemyType in ipairs(enemyNames) do
+                        local quest = questForEnemy(zoneName, enemyType)
+                        if not best or mobLevel > best.mobLevel
+                            or (mobLevel == best.mobLevel and quest and not best.quest) then
+                            best = { zone = zoneName, enemyType = enemyType, mobLevel = mobLevel,
+                                quest = quest }
+                        end
+                    end
                 end
             end
         end
@@ -208,6 +203,25 @@ local function moveNear(position, distance)
     characterRoot.CFrame = CFrame.lookAt(destination, position)
     characterRoot.AssemblyLinearVelocity = Vector3.zero
     return (characterRoot.Position - position).Magnitude <= distance + 4
+end
+
+local function travelToPlan(plan)
+    local baseIsland = plan.zone:match("^(Island%d+)")
+    local island = baseIsland and islands and islands:FindFirstChild(baseIsland)
+    local waypoint = island and island:FindFirstChild("Waypoint_" .. baseIsland)
+    local anchor = waypoint and (waypoint:FindFirstChild("Teleport", true)
+        or waypoint:FindFirstChild("TeleporterPurchasePart", true))
+    local anchorPosition = anchor and modelPosition(anchor)
+    local characterRoot = root()
+    if not anchorPosition or not characterRoot
+        or (characterRoot.Position - anchorPosition).Magnitude < 400
+        or os.clock() - state.lastZoneMove < 8 then return false end
+    state.lastZoneMove = os.clock()
+    if moveNear(anchorPosition, 8) then
+        state.travelUntil = os.clock() + 3
+        return true
+    end
+    return false
 end
 
 local gui = Instance.new("ScreenGui")
@@ -347,15 +361,52 @@ end
 local function manageQuest()
     local id, config, info = activeKillQuest()
     local currentMob = config and nearestEnemy(config.EnemyType)
-    local preferred = chooseQuest()
-    local currentQuestLevel = id and questLevel(config, findNpc(id)) or 0
-    if preferred and (not id or preferred.questLevel > (currentQuestLevel or 0)) then
+    local plan = selectFarmPlan()
+    state.plan = plan
+    local planKey = plan and (plan.zone .. "/" .. plan.enemyType .. "/" .. plan.mobLevel) or "none"
+    if planKey ~= state.lastPlanKey then
+        state.lastPlanKey = planKey
+        print("[PvPFarm] Plan playerLv=" .. level() .. " target=" .. planKey
+            .. " quest=" .. (plan and plan.quest and plan.quest.id or "none"))
+    end
+    if not plan then
+        questLabel.Text = "Quest: no eligible zone spawn"
+        setStatus("No zone monster at a safe level")
+        return nil, nil
+    end
+    if travelToPlan(plan) then
+        setStatus("Traveling to " .. plan.zone .. " for " .. plan.enemyType)
+        targetLabel.Text = "Target: loading " .. plan.enemyType
+        return nil, nil
+    end
+    local preferred = plan.quest
+    if preferred then preferred.npc = findNpc(preferred.id) end
+    if not nearestEnemy(plan.enemyType) and preferred and preferred.npc
+        and os.clock() - state.lastZoneMove >= 5 then
+        local npcPosition = modelPosition(preferred.npc)
+        local characterRoot = root()
+        if npcPosition and characterRoot and (characterRoot.Position - npcPosition).Magnitude > 100 then
+            state.lastZoneMove = os.clock()
+            if moveNear(npcPosition, 12) then
+                state.travelUntil = os.clock() + 2
+                setStatus("Loading " .. plan.enemyType .. " near quest NPC")
+                return nil, nil
+            end
+        end
+    end
+    if not state.quests then return nil, nil end
+    if not preferred then
+        questLabel.Text = "Quest: none for " .. plan.enemyType
+        setStatus("Farming " .. plan.enemyType .. " without quest")
+        return nil, nil
+    end
+    preferred.questLevel = plan.mobLevel
+    if id ~= preferred.id then
         questLabel.Text = string.format("Quest: %s  Lv.%d", preferred.id, preferred.questLevel)
         if not questAvailable(preferred.id) then
             local cached = state.availabilityCache[preferred.id]
             local reason = cached and cached.reason or "unavailable"
             setStatus("Locked: " .. tostring(reason):sub(1, 90))
-            targetLabel.Text = "Target: waiting for quest unlock"
             return nil, nil
         end
         local retryAt = state.rejectedQuests[preferred.id] or 0
@@ -393,10 +444,10 @@ local function manageQuest()
                 warn("[PvPFarm] Remote-only TalkToNPC " .. preferred.id .. " returned callOk="
                     .. tostring(talkOk) .. " result=" .. tostring(talkResult))
             end
-            local npcPosition = modelPosition(preferred.npc)
+            local npcPosition = preferred.npc and modelPosition(preferred.npc)
             if not moveNear(npcPosition, 5) then
-                state.rejectedQuests[preferred.id] = os.clock() + 30
-                setStatus("Cannot reach quest NPC: " .. preferred.id)
+                state.rejectedQuests[preferred.id] = os.clock() + 8
+                setStatus("Waiting for quest NPC: " .. preferred.id)
                 return nil, nil
             end
             setStatus("Talking to " .. preferred.id)
@@ -460,9 +511,6 @@ local function manageQuest()
                     or ("Claim not ready: " .. id))
             end
         end
-    elseif not preferred then
-        questLabel.Text = "Quest: no matching level quest loaded"
-        if id and not currentMob then setStatus("Quest target not loaded") end
     end
     return id, config
 end
@@ -544,20 +592,16 @@ task.spawn(function()
         local ok, err = pcall(function()
             if (state.combat or state.quests) and os.clock() >= state.travelUntil then
                 if os.clock() - state.lastRefresh >= 3 then refreshGameState() end
-                local _id, config
-                if state.quests then _id, config = manageQuest() end
-                if state.combat then
-                    if state.quests and (not _id or not config) then
-                        targetLabel.Text = "Target: waiting for accepted quest"
+                manageQuest()
+                if state.combat and os.clock() >= state.travelUntil then
+                    local targetType = state.plan and state.plan.enemyType
+                    local enemy = targetType and nearestEnemy(targetType)
+                    if enemy then
+                        farmEnemy(enemy, false)
                     else
-                        local enemy = config and nearestEnemy(config.EnemyType)
-                        if not state.quests and not enemy then enemy = nearestEnemy(strongestEnemyType()) end
-                        if enemy then
-                            farmEnemy(enemy, state.quests and config ~= nil)
-                        else
-                            targetLabel.Text = "Target: waiting for eligible enemy"
-                            if not state.quests then setStatus("No enemy at a safe level loaded") end
-                        end
+                        targetLabel.Text = targetType and ("Target: waiting for " .. targetType)
+                            or "Target: no eligible monster"
+                        if not state.quests then setStatus("Waiting for " .. tostring(targetType or "zone monster")) end
                     end
                 end
             end
@@ -573,4 +617,4 @@ task.spawn(function()
 end)
 
 refreshUi()
-print("[PvPFarm] Ready, paused. Quest mode attacks only accepted quest targets; no PvP targets.")
+print("[PvPFarm] Ready, paused. Quest mode farms the highest eligible zone spawn; no PvP targets.")
