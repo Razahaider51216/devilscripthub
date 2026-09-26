@@ -1,5 +1,5 @@
 -- DEVIL HUB: field-egg collector for PlaceId 124216119978534.
--- Targets Workspace.Eggs only. Client-side pulling is visual unless the server accepts pickup.
+-- Targets field eggs, preferring Workspace.RenderedEggs over the empty data folder.
 
 if game.PlaceId ~= 124216119978534 then
     warn("[DevilHub] Wrong place: " .. tostring(game.PlaceId))
@@ -14,11 +14,12 @@ local TweenService = game:GetService("TweenService")
 local player = Players.LocalPlayer
 local playerGui = player:WaitForChild("PlayerGui")
 local eggFolder = WS:WaitForChild("Eggs", 15)
+local renderedFolder = WS:FindFirstChild("RenderedEggs")
 local gameRemotes = RS:WaitForChild("Remotes", 15)
 gameRemotes = gameRemotes and gameRemotes:FindFirstChild("Game")
 local pickupRemote = gameRemotes and gameRemotes:FindFirstChild("EggPickup")
-if not eggFolder or not pickupRemote or not pickupRemote:IsA("RemoteEvent") then
-    warn("[DevilHub] Workspace.Eggs or EggPickup remote is unavailable")
+if not (eggFolder or renderedFolder) or not pickupRemote or not pickupRemote:IsA("RemoteEvent") then
+    warn("[DevilHub] Field eggs or EggPickup remote is unavailable")
     return
 end
 
@@ -31,6 +32,7 @@ local state = {
     connections = {}, rowConnections = {}, logs = {}, attempts = 0, removed = 0, misses = 0,
     lastAttempt = setmetatable({}, { __mode = "k" }),
     retries = setmetatable({}, { __mode = "k" }),
+    uuidWarned = setmetatable({}, { __mode = "k" }),
     search = "", minWeight = 0, dirty = true,
 }
 env.DEVIL_HUB_EGG = state
@@ -98,10 +100,14 @@ local function eggWeight(model)
 end
 
 local function eggUuid(model)
-    local keys = { "UUID", "Uuid", "Uid", "UID", "EggUUID", "EggUid", "EggId", "EntityId", "Id", "GUID" }
+    local keys = { "UUID", "Uuid", "Uid", "UID", "EggUUID", "EggUid", "EggId", "EggID", "EntityId", "Id", "ID", "GUID" }
     local value = field(model, keys) or field(eggData(model), keys)
     if type(value) == "string" and #value >= 12 then return value end
     for _, item in ipairs(model:GetDescendants()) do
+        if item:IsA("BasePart") or item:IsA("ProximityPrompt") then
+            value = field(item, keys)
+            if type(value) == "string" and #value >= 12 then return value end
+        end
         if item:IsA("StringValue") and table.find(keys, item.Name) and #item.Value >= 12 then
             return item.Value
         end
@@ -116,8 +122,16 @@ local function root()
     return character:FindFirstChild("HumanoidRootPart")
 end
 
+local function fieldFolder()
+    renderedFolder = WS:FindFirstChild("RenderedEggs") or renderedFolder
+    if renderedFolder and #renderedFolder:GetChildren() > 0 then return renderedFolder end
+    return eggFolder or renderedFolder
+end
+
 local function validFieldEgg(model)
-    return model and model.Parent == eggFolder and (model:IsA("Model") or model:IsA("BasePart"))
+    local folder = fieldFolder()
+    return model and folder and model.Parent == folder
+        and (model:IsA("Model") or model:IsA("BasePart"))
 end
 
 local function addCatalog(name, rarity, weight)
@@ -397,6 +411,7 @@ local function log(message)
     local height = math.max(160, #state.logs * 31)
     logText.Size = UDim2.new(1, -8, 0, height)
     logScroll.CanvasSize = UDim2.fromOffset(0, height + 8)
+    print("[DevilHub] " .. tostring(message))
 end
 
 local function renderEggs()
@@ -447,6 +462,7 @@ local function renderEggs()
             state.selected[key] = not state.selected[key] or nil
             state.dirty = true
             renderEggs()
+            log((state.selected[key] and "Selected: " or "Deselected: ") .. item.name)
         end))
     end
     eggScroll.CanvasSize = UDim2.fromOffset(0, math.max(48, #names * 56))
@@ -464,7 +480,8 @@ local function refreshWorld()
         item.live = 0
     end
     local count = 0
-    for _, model in ipairs(eggFolder:GetChildren()) do
+    local folder = fieldFolder()
+    for _, model in ipairs(folder and folder:GetChildren() or {}) do
         if validFieldEgg(model) then
             count = count + 1
             local item = addCatalog(eggName(model), eggRarity(model), eggWeight(model))
@@ -476,7 +493,7 @@ local function refreshWorld()
     end
     if state.liveCount ~= count then state.dirty = true end
     state.liveCount = count
-    liveLabel.Text = "World eggs: " .. count
+    liveLabel.Text = "World eggs: " .. count .. "  /  " .. (folder and folder.Name or "none")
 end
 
 local function pullLocal(model)
@@ -628,7 +645,10 @@ table.insert(state.connections, toggle.Activated:Connect(function()
     toggle.Text = state.enabled and "ON" or "OFF"
     toggle.BackgroundColor3 = state.enabled and C.white or C.surface
     toggle.TextColor3 = state.enabled and C.black or C.white
-    log(state.enabled and "Auto egg on" or "Auto egg off")
+    local selectedCount = 0
+    for _ in pairs(state.selected) do selectedCount = selectedCount + 1 end
+    log(state.enabled and ("Auto egg on / selected " .. selectedCount .. " / world "
+        .. tostring(state.liveCount or 0)) or "Auto egg off")
 end))
 table.insert(state.connections, minInput.FocusLost:Connect(function()
     state.minWeight = math.max(0, tonumber(minInput.Text) or 0)
@@ -643,11 +663,13 @@ table.insert(state.connections, allButton.Activated:Connect(function()
     for key in pairs(state.catalog) do state.selected[key] = true end
     state.dirty = true
     renderEggs()
+    log("Selected all egg types")
 end))
 table.insert(state.connections, clearButton.Activated:Connect(function()
     state.selected = {}
     state.dirty = true
     renderEggs()
+    log("Cleared egg selection")
 end))
 table.insert(state.connections, copyButton.Activated:Connect(function()
     local copy = setclipboard or toclipboard or set_clipboard
@@ -672,7 +694,8 @@ indexEggDatabase()
 indexPlacedNames()
 refreshWorld()
 renderEggs()
-log("Ready / " .. tostring(#eggFolder:GetChildren()) .. " world eggs")
+log("Ready / " .. tostring(state.liveCount or 0) .. " field eggs / "
+    .. (fieldFolder() and fieldFolder().Name or "none"))
 
 task.spawn(function()
     local lastCatalog = 0
@@ -685,13 +708,32 @@ task.spawn(function()
             end
             renderEggs()
             if not state.enabled or state.busy then return end
-            local chosen
-            for _, model in ipairs(eggFolder:GetChildren()) do
+            local chosen, matched, missingUuid, belowWeight, exhausted = nil, 0, 0, 0, 0
+            local folder = fieldFolder()
+            for _, model in ipairs(folder and folder:GetChildren() or {}) do
                 if validFieldEgg(model) and state.selected[norm(eggName(model))] then
+                    matched = matched + 1
                     local weight = eggWeight(model)
-                    if (state.minWeight == 0 or (weight and weight >= state.minWeight))
-                        and (state.retries[model] or 0) < 3
-                        and os.clock() - (state.lastAttempt[model] or 0) >= 5 then
+                    if state.minWeight > 0 and (not weight or weight < state.minWeight) then
+                        belowWeight = belowWeight + 1
+                    elseif (state.retries[model] or 0) >= 3 then
+                        exhausted = exhausted + 1
+                    elseif not eggUuid(model) then
+                        missingUuid = missingUuid + 1
+                        if not state.uuidWarned[model] then
+                            state.uuidWarned[model] = true
+                            local fields = {}
+                            for key in pairs(model:GetAttributes()) do fields[#fields + 1] = key end
+                            for _, child in ipairs(model:GetChildren()) do
+                                if child:IsA("ValueBase") or child:IsA("Folder") then
+                                    fields[#fields + 1] = child.Name
+                                end
+                            end
+                            table.sort(fields)
+                            log("UUID missing: " .. eggName(model) .. " / fields: "
+                                .. (#fields > 0 and table.concat(fields, ", ") or "none"))
+                        end
+                    elseif os.clock() - (state.lastAttempt[model] or -math.huge) >= 5 then
                         chosen = model
                         break
                     end
@@ -700,7 +742,21 @@ task.spawn(function()
             if chosen then
                 attemptPickup(chosen)
             elseif next(state.selected) == nil then
-                statusLabel.Text = "Select eggs in EGGS"
+                state.scanStatus = "Select eggs in EGGS"
+            elseif matched == 0 then
+                state.scanStatus = "No selected eggs in " .. (folder and folder.Name or "world")
+            elseif missingUuid > 0 then
+                state.scanStatus = "Matched " .. matched .. ", but UUID missing on " .. missingUuid
+            elseif belowWeight > 0 then
+                state.scanStatus = "Matched " .. matched .. ", below/unknown weight: " .. belowWeight
+            elseif exhausted > 0 then
+                state.scanStatus = "Matched " .. matched .. ", retries exhausted: " .. exhausted
+            else
+                state.scanStatus = "Matched " .. matched .. ", waiting to retry"
+            end
+            if not chosen and state.scanStatus ~= state.lastScanStatus then
+                state.lastScanStatus = state.scanStatus
+                log(state.scanStatus)
             end
         end)
         if not ok then
@@ -710,5 +766,3 @@ task.spawn(function()
         task.wait(0.4)
     end
 end)
-
-print("[DevilHub] Ready. No egg types selected; auto collection is off.")
