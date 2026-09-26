@@ -163,9 +163,13 @@ end
 
 local function watchLabel(inst)
     if watchedLabels[inst] or not (inst:IsA("TextLabel") or inst:IsA("TextButton")) then return end
+    if inst.Name == "GrowthProgress" or inst.Name == "Timer2" then return end
     if not relevant(inst.Name .. " " .. inst.Text) then return end
     watchedLabels[inst] = true
+    local lastLogged = 0
     table.insert(runtime.connections, inst:GetPropertyChangedSignal("Text"):Connect(function()
+        if os.clock() - lastLogged < 2 then return end
+        lastLogged = os.clock()
         log("UI_TEXT", pathOf(inst) .. " text=" .. valueText(inst.Text))
     end))
 end
@@ -194,6 +198,7 @@ table.insert(runtime.connections, playerGui.DescendantAdded:Connect(function(ins
 end))
 table.insert(runtime.connections, WS.DescendantAdded:Connect(function(inst)
     if not relevantRemote(inst.Name) then return end
+    if inst:FindFirstAncestor("Shocked") then return end
     task.defer(function()
         if not runtime.active or not inst.Parent then return end
         if isTreeLike(inst) then
@@ -272,13 +277,11 @@ local function snapshot(lines)
         table.insert(lines, "-- TREE " .. pathOf(inst) .. " pos=" .. positionOf(inst) .. " attrs=" .. attributes(inst))
     end
     table.insert(lines, "")
-    table.insert(lines, "--[[ RELEVANT REMOTES ]] ")
+    table.insert(lines, "--[[ REMOTE INVENTORY ]] ")
     local count = 0
     for _, entry in ipairs(remoteList) do
-        if relevant(entry) then
-            count = count + 1
-            if count <= 120 then table.insert(lines, "-- " .. entry) end
-        end
+        count = count + 1
+        if count <= 250 then table.insert(lines, "-- " .. entry) end
     end
     table.insert(lines, "-- Count: " .. count)
     table.insert(lines, "")
