@@ -33,10 +33,11 @@ local TARGET_MUTATIONS = {}
 
 local MAP_RARITIES = {
     "Common", "Uncommon", "Rare", "Epic", "Legendary",
-    "Mythic", "Cosmic", "Divine", "Secret", "Eternal",
+    "Mythic", "Cosmic", "Divine", "Secret", "Eternal", "SPECIAL",
 }
 
 local BASE_RARITY_PRIORITY = {
+    SPECIAL = 100,
     Eternal = 10,
     Secret = 9,
     Divine = 8,
@@ -50,6 +51,7 @@ local BASE_RARITY_PRIORITY = {
 }
 
 local HIGH_RARITY_NAMES = {
+    SPECIAL = true,
     Mythic = true,
     Cosmic = true,
     Secret = true,
@@ -68,6 +70,7 @@ local RARITY_COLOR = {
     Divine = Color3.fromRGB(255, 225, 85),
     Secret = Color3.fromRGB(255, 125, 155),
     Eternal = Color3.fromRGB(180, 255, 160),
+    SPECIAL = Color3.fromRGB(255, 90, 105),
 }
 
 local COLLECTED_WORDS = {
@@ -189,6 +192,7 @@ local function isHighRarityName(rarity)
         or lowered:find("secret", 1, true) ~= nil
         or lowered:find("divine", 1, true) ~= nil
         or lowered:find("eternal", 1, true) ~= nil
+        or lowered:find("special", 1, true) ~= nil
 end
 
 local function rarityHashColor(rarity)
@@ -346,8 +350,12 @@ local function getGradientRarity(inst)
     local label = inst:FindFirstChild("EggName", true)
     if not label or not (label:IsA("TextLabel") or label:IsA("TextButton")) then return nil end
     for _, child in ipairs(label:GetChildren()) do
-        if child:IsA("UIGradient") and (KNOWN_RARITIES[child.Name] or child.Name == "Ethereal" or child.Name == "Volcanic") then
-            return child.Name
+        if child:IsA("UIGradient") then
+            local name = child.Name:lower()
+            for rarity in pairs(KNOWN_RARITIES) do
+                if rarity:lower() == name then return rarity end
+            end
+            if name == "ethereal" or name == "volcanic" then return child.Name end
         end
     end
     return nil
