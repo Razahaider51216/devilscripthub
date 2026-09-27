@@ -2166,7 +2166,6 @@ local function buildWindUI()
         return window:Tab({
             Title = title,
             Icon = icon,
-            IconShape = "Square",
             Border = true,
         })
     end
