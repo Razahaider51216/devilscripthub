@@ -2175,6 +2175,28 @@ local function buildWindUI()
     local trainingTab = tab("Training", "devil:training")
     local safeTab = tab("Safe Zone", "devil:shield")
     local visualTab = tab("Visual", "devil:eye")
+    local windTabs = { collectorTab, filtersTab, trainingTab, safeTab, visualTab }
+    task.wait(0.08)
+
+    local function hideEmptyPage(tabObject)
+        local frame = tabObject and tabObject.UIElements and tabObject.UIElements.ContainerFrame
+        if not frame then return end
+        for _, child in ipairs(frame:GetChildren()) do
+            if child:IsA("Frame") then
+                for _, descendant in ipairs(child:GetDescendants()) do
+                    if descendant:IsA("TextLabel") and descendant.Text == "This tab is Empty" then
+                        child.Visible = false
+                        return
+                    end
+                end
+            end
+        end
+    end
+    local function hideAllEmptyPages()
+        for _, tabObject in ipairs(windTabs) do
+            hideEmptyPage(tabObject)
+        end
+    end
 
     collectorTab:Section({ Title = "Devil Hub", Desc = "Auto egg collector" })
     if logoImage ~= "" then
@@ -2477,6 +2499,14 @@ local function buildWindUI()
     })
     visualTab:Section({ Title = "ESP marks only fresh target eggs." })
 
+    hideAllEmptyPages()
+    task.defer(hideAllEmptyPages)
+    task.delay(0.25, hideAllEmptyPages)
+    task.delay(0.75, hideAllEmptyPages)
+    if type(collectorTab.Select) == "function" then
+        pcall(function() collectorTab:Select() end)
+    end
+
     if mainGui then
         mainGui.Enabled = false
     end
@@ -2491,6 +2521,10 @@ end)
 if not windBuildOk then
     warn("[VANTA V2] WindUI build error:", windBuildErr)
     setStatus("WindUI build error; legacy GUI kept hidden", UI.red)
+    if runtime.windWindow and type(runtime.windWindow.Destroy) == "function" then
+        pcall(function() runtime.windWindow:Destroy() end)
+        runtime.windWindow = nil
+    end
 end
 if not windBuilt and mainGui then
     mainGui.Enabled = false
