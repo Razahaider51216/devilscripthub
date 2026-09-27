@@ -2018,8 +2018,7 @@ end)
 
 local function buildWindUI()
     local windUrl = "https://raw.githubusercontent.com/Footagesus/WindUI/main/dist/main.lua"
-    local logoImage = runtimeEnv.DEVIL_HUB_LOGO or "https://cdn.discordapp.com/attachments/1533805406193848482/1553780694428291162/image_bwhwwogazphe1fgm8l4wad0x.png?ex=6aba7e89&is=6ab92d09&hm=b31be57abb4830ce8580994005af9928c9e83fce4d4946ef221e64c5a72f30ed&"
-    local logoIcon = logoImage ~= "" and logoImage or "devil:flame"
+    local logoImage = runtimeEnv.DEVIL_HUB_LOGO or "https://raw.githubusercontent.com/Razahaider51216/devilscripthub/main/devil-hub-logo.png"
     if mainGui then
         mainGui.Enabled = false
     end
@@ -2029,38 +2028,60 @@ local function buildWindUI()
     end)
     if not loaded or type(WindUI) ~= "table" then
         warn("[VANTA V2] WindUI load failed:", WindUI)
-        setStatus("WindUI load failed; legacy GUI kept hidden", UI.amber)
+        setStatus("WindUI load failed; fallback GUI enabled", UI.amber)
         return false
     end
-    pcall(function()
-        WindUI.AddIcons("devil", {
-            flame = "rbxassetid://98218034436456",
-            bell = "rbxassetid://97392696311902",
-            egg = "rbxassetid://117851493400222",
-            filter = "rbxassetid://103321376129527",
-            training = "rbxassetid://80277236776212",
-            shield = "rbxassetid://110987169760162",
-            eye = "rbxassetid://100033680381365",
-            play = "rbxassetid://135609604299893",
-            click = "rbxassetid://107150227368485",
-            scan = "rbxassetid://80009010551347",
-            radar = "rbxassetid://138528222906635",
-            sliders = "rbxassetid://85538382643347",
-            gem = "rbxassetid://112904952151156",
-            dna = "rbxassetid://74007982981741",
-            list = "rbxassetid://99809353635593",
-            check = "rbxassetid://95183312173858",
-            sparkles = "rbxassetid://138635884129147",
-            crown = "rbxassetid://127843403295538",
-            diamond = "rbxassetid://105846996304890",
-            close = "rbxassetid://110786993356448",
-            badge = "rbxassetid://100325578561866",
-            zap = "rbxassetid://130551565616516",
-            pin = "rbxassetid://84279202219901",
-            undo = "rbxassetid://113885292059932",
-            refresh = "rbxassetid://138133190015277",
-        })
-    end)
+    WindUI.Creator.AddIcons("devil", {
+        flame = "rbxassetid://98218034436456",
+        bell = "rbxassetid://97392696311902",
+        egg = "rbxassetid://117851493400222",
+        filter = "rbxassetid://103321376129527",
+        training = "rbxassetid://80277236776212",
+        shield = "rbxassetid://110987169760162",
+        eye = "rbxassetid://100033680381365",
+        play = "rbxassetid://135609604299893",
+        click = "rbxassetid://107150227368485",
+        scan = "rbxassetid://80009010551347",
+        radar = "rbxassetid://138528222906635",
+        sliders = "rbxassetid://85538382643347",
+        gem = "rbxassetid://112904952151156",
+        dna = "rbxassetid://74007982981741",
+        list = "rbxassetid://99809353635593",
+        check = "rbxassetid://95183312173858",
+        sparkles = "rbxassetid://138635884129147",
+        crown = "rbxassetid://127843403295538",
+        diamond = "rbxassetid://105846996304890",
+        close = "rbxassetid://110786993356448",
+        badge = "rbxassetid://100325578561866",
+        zap = "rbxassetid://130551565616516",
+        pin = "rbxassetid://84279202219901",
+        undo = "rbxassetid://113885292059932",
+        refresh = "rbxassetid://138133190015277",
+    })
+
+    local logoIcon = "devil:flame"
+    if type(logoImage) == "string" then
+        if logoImage:match("^rbxassetid://") then
+            logoIcon = logoImage
+        elseif logoImage:match("^https?://") and type(writefile) == "function" and type(getcustomasset) == "function" then
+            local logoOk, asset = pcall(function()
+                local folder = "DevilHub"
+                local path = folder .. "/devil-hub-logo-v1.png"
+                if type(makefolder) == "function" and (type(isfolder) ~= "function" or not isfolder(folder)) then
+                    makefolder(folder)
+                end
+                if type(isfile) ~= "function" or not isfile(path) then
+                    writefile(path, game:HttpGet(logoImage))
+                end
+                return getcustomasset(path)
+            end)
+            if logoOk and type(asset) == "string" then
+                logoIcon = asset
+            else
+                warn("[VANTA V2] Logo load failed:", asset)
+            end
+        end
+    end
 
     local windowOk, window = pcall(function()
         return WindUI:CreateWindow({
@@ -2091,7 +2112,7 @@ local function buildWindUI()
     end)
     if not windowOk or type(window) ~= "table" then
         warn("[VANTA V2] WindUI window failed:", window)
-        setStatus("WindUI window failed; legacy GUI kept hidden", UI.red)
+        setStatus("WindUI window failed; fallback GUI enabled", UI.red)
         return false
     end
     runtime.windWindow = window
@@ -2199,18 +2220,7 @@ local function buildWindUI()
     end
 
     collectorTab:Section({ Title = "Devil Hub", Desc = "Auto egg collector" })
-    if logoImage ~= "" then
-        collectorTab:Image({
-            Image = logoImage,
-            AspectRatio = "1:1",
-            Radius = 8,
-        })
-    else
-        collectorTab:Section({
-            Title = "DB",
-            Desc = "Logo asset not configured",
-        })
-    end
+    collectorTab:Image({ Image = logoIcon, AspectRatio = "1:1", Radius = 8 })
 
     statusLbl = proxy(collectorTab:Section({ Title = "Ready", Desc = "Collector status" }), "Ready")
     countLbl = proxy(collectorTab:Section({ Title = "Targets: 0 | Collected: 0 | Failed: 0" }), "")
@@ -2520,14 +2530,14 @@ local windBuildOk, windBuildErr = pcall(function()
 end)
 if not windBuildOk then
     warn("[VANTA V2] WindUI build error:", windBuildErr)
-    setStatus("WindUI build error; legacy GUI kept hidden", UI.red)
+    setStatus("WindUI build error; fallback GUI enabled", UI.red)
     if runtime.windWindow and type(runtime.windWindow.Destroy) == "function" then
         pcall(function() runtime.windWindow:Destroy() end)
         runtime.windWindow = nil
     end
 end
 if not windBuilt and mainGui then
-    mainGui.Enabled = false
+    mainGui.Enabled = true
 end
 
 local descendantConnection = WS.DescendantAdded:Connect(function(inst)
