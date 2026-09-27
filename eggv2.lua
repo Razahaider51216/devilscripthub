@@ -2286,6 +2286,12 @@ local function buildWindUI()
         Folder = "DevilHub",
         Icon = logoIcon,
         IconSize = 28,
+        Theme = "Dark",
+        Transparent = true,
+        Acrylic = false,
+        NewElements = true,
+        BackgroundImageTransparency = 1,
+        ShadowTransparency = 0.35,
         Size = UDim2.fromOffset(620, 540),
         HideSearchBar = false,
         OpenButton = {
@@ -2300,6 +2306,9 @@ local function buildWindUI()
         },
     })
     runtime.windWindow = window
+    pcall(function()
+        window:SetBackgroundTransparency(0.3)
+    end)
 
     local wind = { filterDropdown = nil, notifyBusy = false, suppressFilterCallback = false }
     local function notify(title, content, icon)
@@ -2352,6 +2361,26 @@ local function buildWindUI()
         })
     end
 
+    local function windTitle(value)
+        if type(value) == "table" then
+            return value.Title or value.Name or value[1] or ""
+        end
+        return tostring(value or "")
+    end
+
+    local function filterModeIcon(mode)
+        if mode == "Egg Names" then return "lucide:egg" end
+        if mode == "Mutations" then return "lucide:dna" end
+        return "lucide:gem"
+    end
+
+    local function filterValueIcon(key)
+        if filterMode == "Egg Names" then return "lucide:egg" end
+        if filterMode == "Mutations" then return "lucide:sparkles" end
+        if isHighRarityName(key) then return "lucide:crown" end
+        return "lucide:diamond"
+    end
+
     local collectorTab = tab("Collector", "lucide:egg")
     local filtersTab = tab("Filters", "lucide:list-filter")
     local trainingTab = tab("Training", "lucide:dumbbell")
@@ -2378,6 +2407,7 @@ local function buildWindUI()
     autoBtn = proxy(collectorTab:Toggle({
         Title = "AUTO COLLECT: OFF",
         Desc = "Collect selected eggs automatically",
+        Icon = "lucide:play",
         Value = autoOn,
         Callback = function(value)
             autoOn = value == true
@@ -2401,6 +2431,7 @@ local function buildWindUI()
     deepScanBtn = proxy(collectorTab:Toggle({
         Title = "LONG RANGE: ON",
         Desc = "Scan every loaded egg, not only nearby eggs",
+        Icon = "lucide:scan-search",
         Value = longRangeOn,
         Callback = function(value)
             longRangeOn = value == true
@@ -2427,6 +2458,7 @@ local function buildWindUI()
     delayValueLbl = proxy(collectorTab:Section({ Title = string.format("Loop Delay: %.1fs", autoDelay) }), "")
     collectorTab:Slider({
         Title = "Loop Delay",
+        Icons = { From = "lucide:timer-reset", To = "lucide:timer" },
         Step = 0.1,
         Value = { Min = 0.6, Max = 5, Default = autoDelay },
         Callback = function(value)
@@ -2436,6 +2468,7 @@ local function buildWindUI()
     })
     collectorTab:Slider({
         Title = "Eggs Per Trip",
+        Icons = { From = "lucide:egg", To = "lucide:package-plus" },
         Step = 1,
         Value = { Min = 1, Max = 6, Default = carryTarget },
         Callback = function(value)
@@ -2447,10 +2480,16 @@ local function buildWindUI()
     selectedSummaryLbl = proxy(filtersTab:Section({ Title = selectedRarityText() }), selectedRarityText())
     filtersTab:Dropdown({
         Title = "Filter Group",
-        Values = { "Rarity", "Egg Names", "Mutations" },
-        Value = filterMode,
+        Icon = "lucide:sliders-horizontal",
+        Values = {
+            { Title = "Rarity", Icon = "lucide:gem" },
+            { Title = "Egg Names", Icon = "lucide:egg" },
+            { Title = "Mutations", Icon = "lucide:dna" },
+        },
+        Value = { Title = filterMode, Icon = filterModeIcon(filterMode) },
         Callback = function(value)
-            filterMode = value or "Rarity"
+            filterMode = windTitle(value)
+            if filterMode == "" then filterMode = "Rarity" end
             if rebuildRarityButtons then rebuildRarityButtons() end
             updateRarityButtons()
         end,
@@ -2459,13 +2498,18 @@ local function buildWindUI()
         local options = currentFilterOptions()
         local values = {}
         for _, key in ipairs(options) do
-            table.insert(values, filterMode == "Egg Names" and (EGG_NAME_LABELS[key] or key) or key)
+            local label = filterMode == "Egg Names" and (EGG_NAME_LABELS[key] or key) or key
+            table.insert(values, {
+                Title = label,
+                Icon = filterValueIcon(key),
+            })
         end
         return values
     end
     wind.filterDropdown = filtersTab:Dropdown({
         Title = "Selected Filters",
         Desc = "Multi-select targets",
+        Icon = "lucide:list-checks",
         Values = filterOptionsForWind(),
         Multi = true,
         Value = {},
@@ -2477,9 +2521,10 @@ local function buildWindUI()
             end
             if type(values) == "table" then
                 for _, value in ipairs(values) do
+                    local picked = windTitle(value)
                     for _, key in ipairs(options) do
                         local label = filterMode == "Egg Names" and (EGG_NAME_LABELS[key] or key) or key
-                        if value == label or value == key then
+                        if picked == label or picked == key then
                             selected[key] = true
                         end
                     end
@@ -2543,6 +2588,7 @@ local function buildWindUI()
     })
     rarerModeBtn = proxy(filtersTab:Toggle({
         Title = "RARE FIRST ON",
+        Icon = "lucide:crown",
         Value = rareFirstOn,
         Callback = function(value)
             rareFirstOn = value == true
@@ -2572,6 +2618,7 @@ local function buildWindUI()
     trainingStatusLbl = proxy(trainingTab:Section({ Title = "Tried: 0 | Failed: 0" }), "")
     trainingBtn = proxy(trainingTab:Toggle({
         Title = "AUTO TRAIN X2: OFF",
+        Icon = "lucide:badge-plus",
         Value = trainingX2On,
         Callback = function(value)
             trainingX2On = value == true
@@ -2622,6 +2669,7 @@ local function buildWindUI()
 
     espBtn = proxy(visualTab:Toggle({
         Title = "ESP: OFF",
+        Icon = "lucide:eye",
         Value = espOn,
         Callback = function(value)
             espOn = value == true
@@ -2647,6 +2695,7 @@ local function buildWindUI()
     sea.btn = proxy(seaTab:Toggle({
         Title = "AUTO CHARGE: OFF",
         Desc = string.format("Release at %.3f BAR for +5s", sea.chargeThreshold),
+        Icon = "lucide:waves",
         Value = sea.autoOn,
         Callback = function(value)
             sea.autoOn = value == true
@@ -2663,6 +2712,7 @@ local function buildWindUI()
     }), "AUTO CHARGE: OFF")
     seaTab:Slider({
         Title = "Excellent Threshold",
+        Icons = { From = "lucide:gauge", To = "lucide:badge-check" },
         Step = 0.001,
         Value = { Min = 0.97, Max = 1, Default = sea.chargeThreshold },
         Callback = function(value)
