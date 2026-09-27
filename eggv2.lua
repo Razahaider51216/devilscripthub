@@ -317,7 +317,7 @@ local function getAttr(inst, ...)
 end
 
 local function getRarityAttr(inst)
-    for _, key in ipairs({ "Rarity", "EggRarity", "Tier" }) do
+    for _, key in ipairs({ "Rarity", "EggRarity", "Tier", "Rank" }) do
         local value = inst:GetAttribute(key)
         local text = cleanText(value)
         if text ~= "" and not tonumber(text) then
@@ -340,6 +340,17 @@ end
 
 local function getTextRarity(inst)
     return getLabelText(inst, "RarityLabel")
+end
+
+local function getGradientRarity(inst)
+    local label = inst:FindFirstChild("EggName", true)
+    if not label or not (label:IsA("TextLabel") or label:IsA("TextButton")) then return nil end
+    for _, child in ipairs(label:GetChildren()) do
+        if child:IsA("UIGradient") and (KNOWN_RARITIES[child.Name] or child.Name == "Ethereal" or child.Name == "Volcanic") then
+            return child.Name
+        end
+    end
+    return nil
 end
 
 local function getTextDisplayName(inst)
@@ -400,7 +411,7 @@ local function getEggAncestor(inst)
 end
 
 local function resolveInfo(inst)
-    local rarity = getTextRarity(inst) or getRarityAttr(inst)
+    local rarity = getRarityAttr(inst) or getTextRarity(inst) or getGradientRarity(inst)
     local displayName = getTextDisplayName(inst) or getAttr(inst, "DisplayName", "EggType") or inst.Name
     local eggType = getAttr(inst, "EggType") or inst.Name
     local mutation = getAttr(inst, "Mutation")
@@ -583,11 +594,17 @@ end
 
 local function discoverMapRarities()
     local before = #RARITY_OPTIONS + #EGG_NAME_OPTIONS + #MUTATION_OPTIONS
+    local labelsChanged = false
     local spawnedItems = WS:FindFirstChild("SpawnedItems")
 
     for _, inst in ipairs(spawnedItems and spawnedItems:GetChildren() or {}) do
         if isSpawnedEgg(inst) and not isCollectedOrStoredEgg(inst) then
+            local eggType = getAttr(inst, "EggType")
+            local previousLabel = eggType and EGG_NAME_LABELS[eggType]
             resolveInfo(inst)
+            if eggType and EGG_NAME_LABELS[eggType] ~= previousLabel then
+                labelsChanged = true
+            end
         end
     end
 
@@ -595,7 +612,7 @@ local function discoverMapRarities()
         addRarityOption("Unknown", false)
     end
 
-    local changed = #RARITY_OPTIONS + #EGG_NAME_OPTIONS + #MUTATION_OPTIONS ~= before
+    local changed = labelsChanged or #RARITY_OPTIONS + #EGG_NAME_OPTIONS + #MUTATION_OPTIONS ~= before
     if rebuildRarityButtons and changed then
         rebuildRarityButtons()
     end
@@ -2289,41 +2306,9 @@ local function buildWindUI()
     local modeButtons = {}
     local filterPageLabel
     local filterSearch
-
-    local function refreshWindFilters()
-        local options, selected = currentFilterOptions()
-        filterMatches = {}
-        local query = filterQuery:lower()
-        for _, key in ipairs(options) do
-            local label = filterMode == "Egg Names" and (EGG_NAME_LABELS[key] or key) or key
-            if query == "" or label:lower():find(query, 1, true) or key:lower():find(query, 1, true) then
-                table.insert(filterMatches, key)
-            end
-        end
-
-        local pageCount = math.max(1, math.ceil(#filterMatches / pageSize))
-        filterPage = math.clamp(filterPage, 1, pageCount)
-        local selectedCount = 0
-        for _, key in ipairs(options) do
-            if selected[key] then selectedCount = selectedCount + 1 end
-        end
-        if filterPageLabel then
-            filterPageLabel.Text = string.format("%d found | %d selected | Page %d/%d", #filterMatches, selectedCount, filterPage, pageCount)
-        end
-
-        for mode, button in pairs(modeButtons) do
-            button:SetTitle(mode .. (filterMode == mode and " (active)" or ""))
-        end
-        for index, button in ipairs(filterRows) do
-            local key = filterMatches[(filterPage - 1) * pageSize + index]
-            if button.ElementFrame then button.ElementFrame.Visible = key ~= nil end
-            if key then
-                local label = filterMode == "Egg Names" and (EGG_NAME_LABELS[key] or key) or key
-                button:SetTitle((selected[key] and "[x] " or "[ ] ") .. label)
-            end
-        end
-        updateRarityButtons()
-    end
+    local previousPageButton
+    local nextPageButton
+    local refreshWindFilters
 
     for _, mode in ipairs({ "Rarity", "Egg Names", "Mutations" }) do
         modeButtons[mode] = filtersTab:Button({
@@ -2347,29 +2332,30 @@ local function buildWindUI()
         Callback = function(value)
             filterQuery = tostring(value or "")
             filterPage = 1
-            refreshWindFilters()
+            if refreshWindFilters then refreshWindFilters() end
         end,
     })
 
-    filtersTab:Button({
+    previousPageButton = filtersTab:Button({
         Title = "PREVIOUS PAGE",
         Icon = "devil:undo",
         Callback = function()
             filterPage = math.max(1, filterPage - 1)
-            refreshWindFilters()
+            if refreshWindFilters then refreshWindFilters() end
         end,
     })
-    filtersTab:Button({
+    nextPageButton = filtersTab:Button({
         Title = "NEXT PAGE",
         Icon = "devil:play",
         Callback = function()
             filterPage = filterPage + 1
-            refreshWindFilters()
+            if refreshWindFilters then refreshWindFilters() end
         end,
     })
 
-    for index = 1, pageSize do
-        filterRows[index] = filtersTab:Button({
+    local filterList = filtersTab:VStack({})
+    local function addFilterRow(index)
+        filterRows[index] = filterList:Button({
             Title = "[ ]",
             Icon = "devil:check",
             Callback = function()
@@ -2380,10 +2366,55 @@ local function buildWindUI()
                 processed = {}
                 getTargets()
                 if espOn then clearESP(); scanESP() end
-                refreshWindFilters()
+                if refreshWindFilters then refreshWindFilters() end
                 setStatus("Egg filters updated", UI.cyan)
             end,
         })
+    end
+
+    refreshWindFilters = function()
+        local options, selected = currentFilterOptions()
+        filterMatches = {}
+        local query = filterQuery:lower()
+        for _, key in ipairs(options) do
+            local label = filterMode == "Egg Names" and (EGG_NAME_LABELS[key] or key) or key
+            if filterMode == "Rarity" or query == "" or label:lower():find(query, 1, true) or key:lower():find(query, 1, true) then
+                table.insert(filterMatches, key)
+            end
+        end
+
+        local isRarity = filterMode == "Rarity"
+        pageSize = isRarity and math.max(1, #filterMatches) or 8
+        local pageCount = math.max(1, math.ceil(#filterMatches / pageSize))
+        filterPage = isRarity and 1 or math.clamp(filterPage, 1, pageCount)
+        local selectedCount = 0
+        for _, key in ipairs(options) do
+            if selected[key] then selectedCount = selectedCount + 1 end
+        end
+        filterPageLabel.Text = isRarity
+            and string.format("%d levels | %d selected", #filterMatches, selectedCount)
+            or string.format("%d found | %d selected | Page %d/%d", #filterMatches, selectedCount, filterPage, pageCount)
+
+        if filterSearch.ElementFrame then filterSearch.ElementFrame.Visible = not isRarity end
+        if previousPageButton.ElementFrame then previousPageButton.ElementFrame.Visible = not isRarity end
+        if nextPageButton.ElementFrame then nextPageButton.ElementFrame.Visible = not isRarity end
+
+        local requiredRows = isRarity and #filterMatches or 8
+        for index = #filterRows + 1, requiredRows do
+            addFilterRow(index)
+        end
+        for mode, button in pairs(modeButtons) do
+            button:SetTitle(mode .. (filterMode == mode and " (active)" or ""))
+        end
+        for index, button in ipairs(filterRows) do
+            local key = index <= requiredRows and filterMatches[(filterPage - 1) * pageSize + index] or nil
+            if button.ElementFrame then button.ElementFrame.Visible = key ~= nil end
+            if key then
+                local label = filterMode == "Egg Names" and (EGG_NAME_LABELS[key] or key) or key
+                button:SetTitle((selected[key] and "[x] " or "[ ] ") .. label)
+            end
+        end
+        updateRarityButtons()
     end
     refreshWindFilters()
 
@@ -2585,6 +2616,15 @@ local descendantConnection = WS.DescendantAdded:Connect(function(inst)
     end
 end)
 table.insert(runtime.connections, descendantConnection)
+
+task.spawn(function()
+    while runtime.active do
+        task.wait(4)
+        if not runtime.active then break end
+        local ok, err = pcall(discoverMapRarities)
+        if not ok then warn("[VANTA V2] Live egg scan failed:", err) end
+    end
+end)
 
 local characterConnection = player.CharacterAdded:Connect(function()
     task.wait(0.75)
