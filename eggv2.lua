@@ -1160,6 +1160,7 @@ end
 local legacyAutoRunning = false
 for _, oldGui in ipairs(gui:GetChildren()) do
     if (oldGui.Name == "VANTA_EggCollectorV2" or oldGui.Name == "VANTA_EggHunter") and oldGui:IsA("ScreenGui") then
+        oldGui.Enabled = false
         local oldAutoText = oldGui.Name == "VANTA_EggHunter" and "AUTO EGG: ON" or "AUTO COLLECT: ON"
         local autoButton
         for _, child in ipairs(oldGui:GetDescendants()) do
@@ -1199,6 +1200,7 @@ sg.ResetOnSpawn = false
 sg.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
 sg.IgnoreGuiInset = true
 sg.DisplayOrder = 1000
+sg.Enabled = false
 sg.Parent = gui
 mainGui = sg
 
@@ -2018,17 +2020,20 @@ local function buildWindUI()
     local windUrl = "https://raw.githubusercontent.com/Footagesus/WindUI/main/dist/main.lua"
     local logoImage = runtimeEnv.DEVIL_HUB_LOGO or "https://cdn.discordapp.com/attachments/1533805406193848482/1553780694428291162/image_bwhwwogazphe1fgm8l4wad0x.png?ex=6aba7e89&is=6ab92d09&hm=b31be57abb4830ce8580994005af9928c9e83fce4d4946ef221e64c5a72f30ed&"
     local logoIcon = logoImage ~= "" and logoImage or "devil:flame"
+    if mainGui then
+        mainGui.Enabled = false
+    end
 
     local loaded, WindUI = pcall(function()
         return loadstring(game:HttpGet(windUrl))()
     end)
     if not loaded or type(WindUI) ~= "table" then
         warn("[VANTA V2] WindUI load failed:", WindUI)
-        setStatus("WindUI load failed; fallback GUI is still available", UI.amber)
+        setStatus("WindUI load failed; legacy GUI kept hidden", UI.amber)
         return false
     end
     pcall(function()
-        WindUI:AddIcons("devil", {
+        WindUI.AddIcons("devil", {
             flame = "rbxassetid://98218034436456",
             bell = "rbxassetid://97392696311902",
             egg = "rbxassetid://117851493400222",
@@ -2057,31 +2062,38 @@ local function buildWindUI()
         })
     end)
 
-    local window = WindUI:CreateWindow({
-        Title = "Devil Hub",
-        Author = "Egg Collector v2",
-        Folder = "DevilHub",
-        Icon = logoIcon,
-        IconSize = 28,
-        Theme = "Dark",
-        Transparent = true,
-        Acrylic = false,
-        NewElements = true,
-        BackgroundImageTransparency = 1,
-        ShadowTransparency = 0.35,
-        Size = UDim2.fromOffset(620, 540),
-        HideSearchBar = false,
-        OpenButton = {
+    local windowOk, window = pcall(function()
+        return WindUI:CreateWindow({
             Title = "Devil Hub",
+            Author = "Egg Collector v2",
+            Folder = "DevilHub",
             Icon = logoIcon,
-            Enabled = true,
-            Draggable = true,
-            OnlyMobile = false,
-            CornerRadius = UDim.new(1, 0),
-            StrokeThickness = 2,
-            Color = ColorSequence.new(Color3.fromRGB(255, 70, 84), Color3.fromRGB(65, 222, 204)),
-        },
-    })
+            IconSize = 28,
+            Theme = "Dark",
+            Transparent = true,
+            Acrylic = false,
+            NewElements = true,
+            BackgroundImageTransparency = 1,
+            ShadowTransparency = 0.35,
+            Size = UDim2.fromOffset(620, 540),
+            HideSearchBar = false,
+            OpenButton = {
+                Title = "Devil Hub",
+                Icon = logoIcon,
+                Enabled = true,
+                Draggable = true,
+                OnlyMobile = false,
+                CornerRadius = UDim.new(1, 0),
+                StrokeThickness = 2,
+                Color = ColorSequence.new(Color3.fromRGB(255, 70, 84), Color3.fromRGB(65, 222, 204)),
+            },
+        })
+    end)
+    if not windowOk or type(window) ~= "table" then
+        warn("[VANTA V2] WindUI window failed:", window)
+        setStatus("WindUI window failed; legacy GUI kept hidden", UI.red)
+        return false
+    end
     runtime.windWindow = window
     pcall(function()
         window:SetBackgroundTransparency(0.3)
@@ -2472,7 +2484,17 @@ local function buildWindUI()
     return true
 end
 
-buildWindUI()
+local windBuilt = false
+local windBuildOk, windBuildErr = pcall(function()
+    windBuilt = buildWindUI() == true
+end)
+if not windBuildOk then
+    warn("[VANTA V2] WindUI build error:", windBuildErr)
+    setStatus("WindUI build error; legacy GUI kept hidden", UI.red)
+end
+if not windBuilt and mainGui then
+    mainGui.Enabled = false
+end
 
 local descendantConnection = WS.DescendantAdded:Connect(function(inst)
     local spawnedItems = WS:FindFirstChild("SpawnedItems")
