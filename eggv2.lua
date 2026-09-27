@@ -2017,7 +2017,7 @@ end)
 local function buildWindUI()
     local windUrl = "https://raw.githubusercontent.com/Footagesus/WindUI/main/dist/main.lua"
     local logoImage = runtimeEnv.DEVIL_HUB_LOGO or "https://cdn.discordapp.com/attachments/1533805406193848482/1553780694428291162/image_bwhwwogazphe1fgm8l4wad0x.png?ex=6aba7e89&is=6ab92d09&hm=b31be57abb4830ce8580994005af9928c9e83fce4d4946ef221e64c5a72f30ed&"
-    local logoIcon = logoImage ~= "" and logoImage or "lucide:flame"
+    local logoIcon = logoImage ~= "" and logoImage or "devil:flame"
 
     local loaded, WindUI = pcall(function()
         return loadstring(game:HttpGet(windUrl))()
@@ -2027,6 +2027,35 @@ local function buildWindUI()
         setStatus("WindUI load failed; fallback GUI is still available", UI.amber)
         return false
     end
+    pcall(function()
+        WindUI:AddIcons("devil", {
+            flame = "rbxassetid://98218034436456",
+            bell = "rbxassetid://97392696311902",
+            egg = "rbxassetid://117851493400222",
+            filter = "rbxassetid://103321376129527",
+            training = "rbxassetid://80277236776212",
+            shield = "rbxassetid://110987169760162",
+            eye = "rbxassetid://100033680381365",
+            play = "rbxassetid://135609604299893",
+            click = "rbxassetid://107150227368485",
+            scan = "rbxassetid://80009010551347",
+            radar = "rbxassetid://138528222906635",
+            sliders = "rbxassetid://85538382643347",
+            gem = "rbxassetid://112904952151156",
+            dna = "rbxassetid://74007982981741",
+            list = "rbxassetid://99809353635593",
+            check = "rbxassetid://95183312173858",
+            sparkles = "rbxassetid://138635884129147",
+            crown = "rbxassetid://127843403295538",
+            diamond = "rbxassetid://105846996304890",
+            close = "rbxassetid://110786993356448",
+            badge = "rbxassetid://100325578561866",
+            zap = "rbxassetid://130551565616516",
+            pin = "rbxassetid://84279202219901",
+            undo = "rbxassetid://113885292059932",
+            refresh = "rbxassetid://138133190015277",
+        })
+    end)
 
     local window = WindUI:CreateWindow({
         Title = "Devil Hub",
@@ -2066,7 +2095,7 @@ local function buildWindUI()
             WindUI:Notify({
                 Title = title,
                 Content = content,
-                Icon = icon or "lucide:bell",
+                Icon = icon or "devil:bell",
                 Duration = 3,
             })
         end)
@@ -2117,23 +2146,23 @@ local function buildWindUI()
     end
 
     local function filterModeIcon(mode)
-        if mode == "Egg Names" then return "lucide:egg" end
-        if mode == "Mutations" then return "lucide:dna" end
-        return "lucide:gem"
+        if mode == "Egg Names" then return "devil:egg" end
+        if mode == "Mutations" then return "devil:dna" end
+        return "devil:gem"
     end
 
     local function filterValueIcon(key)
-        if filterMode == "Egg Names" then return "lucide:egg" end
-        if filterMode == "Mutations" then return "lucide:sparkles" end
-        if isHighRarityName(key) then return "lucide:crown" end
-        return "lucide:diamond"
+        if filterMode == "Egg Names" then return "devil:egg" end
+        if filterMode == "Mutations" then return "devil:sparkles" end
+        if isHighRarityName(key) then return "devil:crown" end
+        return "devil:diamond"
     end
 
-    local collectorTab = tab("Collector", "lucide:egg")
-    local filtersTab = tab("Filters", "lucide:list-filter")
-    local trainingTab = tab("Training", "lucide:dumbbell")
-    local safeTab = tab("Safe Zone", "lucide:shield")
-    local visualTab = tab("Visual", "lucide:eye")
+    local collectorTab = tab("Collector", "devil:egg")
+    local filtersTab = tab("Filters", "devil:filter")
+    local trainingTab = tab("Training", "devil:training")
+    local safeTab = tab("Safe Zone", "devil:shield")
+    local visualTab = tab("Visual", "devil:eye")
 
     collectorTab:Section({ Title = "Devil Hub", Desc = "Auto egg collector" })
     if logoImage ~= "" then
@@ -2154,7 +2183,7 @@ local function buildWindUI()
     autoBtn = proxy(collectorTab:Toggle({
         Title = "AUTO COLLECT: OFF",
         Desc = "Collect selected eggs automatically",
-        Icon = "lucide:play",
+        Icon = "devil:play",
         Value = autoOn,
         Callback = function(value)
             autoOn = value == true
@@ -2169,7 +2198,7 @@ local function buildWindUI()
     }), "AUTO COLLECT: OFF")
     collectorTab:Button({
         Title = "COLLECT ONCE",
-        Icon = "lucide:mouse-pointer-click",
+        Icon = "devil:click",
         Justify = "Center",
         Callback = function()
             if not collectBusy then runtime.collectBest() end
@@ -2178,7 +2207,7 @@ local function buildWindUI()
     deepScanBtn = proxy(collectorTab:Toggle({
         Title = "LONG RANGE: ON",
         Desc = "Scan every loaded egg, not only nearby eggs",
-        Icon = "lucide:scan-search",
+        Icon = "devil:scan",
         Value = longRangeOn,
         Callback = function(value)
             longRangeOn = value == true
@@ -2188,7 +2217,7 @@ local function buildWindUI()
     }), "LONG RANGE: ON")
     collectorTab:Button({
         Title = "RESCAN FAR",
-        Icon = "lucide:radar",
+        Icon = "devil:radar",
         Justify = "Center",
         Callback = function()
             if not collectBusy then
@@ -2205,7 +2234,6 @@ local function buildWindUI()
     delayValueLbl = proxy(collectorTab:Section({ Title = string.format("Loop Delay: %.1fs", autoDelay) }), "")
     collectorTab:Slider({
         Title = "Loop Delay",
-        Icons = { From = "lucide:timer-reset", To = "lucide:timer" },
         Step = 0.1,
         Value = { Min = 0.6, Max = 5, Default = autoDelay },
         Callback = function(value)
@@ -2215,7 +2243,6 @@ local function buildWindUI()
     })
     collectorTab:Slider({
         Title = "Eggs Per Trip",
-        Icons = { From = "lucide:egg", To = "lucide:package-plus" },
         Step = 1,
         Value = { Min = 1, Max = 6, Default = carryTarget },
         Callback = function(value)
@@ -2227,11 +2254,11 @@ local function buildWindUI()
     selectedSummaryLbl = proxy(filtersTab:Section({ Title = selectedRarityText() }), selectedRarityText())
     filtersTab:Dropdown({
         Title = "Filter Group",
-        Icon = "lucide:sliders-horizontal",
+        Icon = "devil:sliders",
         Values = {
-            { Title = "Rarity", Icon = "lucide:gem" },
-            { Title = "Egg Names", Icon = "lucide:egg" },
-            { Title = "Mutations", Icon = "lucide:dna" },
+            { Title = "Rarity", Icon = "devil:gem" },
+            { Title = "Egg Names", Icon = "devil:egg" },
+            { Title = "Mutations", Icon = "devil:dna" },
         },
         Value = { Title = filterMode, Icon = filterModeIcon(filterMode) },
         Callback = function(value)
@@ -2256,7 +2283,7 @@ local function buildWindUI()
     wind.filterDropdown = filtersTab:Dropdown({
         Title = "Selected Filters",
         Desc = "Multi-select targets",
-        Icon = "lucide:list-checks",
+        Icon = "devil:list",
         Values = filterOptionsForWind(),
         Multi = true,
         Value = {},
@@ -2304,7 +2331,7 @@ local function buildWindUI()
     end
     filtersTab:Button({
         Title = "SELECT ALL",
-        Icon = "lucide:check-check",
+        Icon = "devil:check",
         Justify = "Center",
         Callback = function()
             discoverMapRarities()
@@ -2319,7 +2346,7 @@ local function buildWindUI()
     })
     filtersTab:Button({
         Title = "HIGH RARITY",
-        Icon = "lucide:sparkles",
+        Icon = "devil:sparkles",
         Justify = "Center",
         Callback = function()
             discoverMapRarities()
@@ -2335,7 +2362,7 @@ local function buildWindUI()
     })
     rarerModeBtn = proxy(filtersTab:Toggle({
         Title = "RARE FIRST ON",
-        Icon = "lucide:crown",
+        Icon = "devil:crown",
         Value = rareFirstOn,
         Callback = function(value)
             rareFirstOn = value == true
@@ -2348,7 +2375,7 @@ local function buildWindUI()
     }), "RARE FIRST ON")
     filtersTab:Button({
         Title = "CLEAR FILTERS",
-        Icon = "lucide:x",
+        Icon = "devil:close",
         Justify = "Center",
         Callback = function()
             discoverMapRarities()
@@ -2365,7 +2392,7 @@ local function buildWindUI()
     trainingStatusLbl = proxy(trainingTab:Section({ Title = "Tried: 0 | Failed: 0" }), "")
     trainingBtn = proxy(trainingTab:Toggle({
         Title = "AUTO TRAIN X2: OFF",
-        Icon = "lucide:badge-plus",
+        Icon = "devil:badge",
         Value = trainingX2On,
         Callback = function(value)
             trainingX2On = value == true
@@ -2382,7 +2409,7 @@ local function buildWindUI()
     }), "AUTO TRAIN X2: OFF")
     trainingTab:Button({
         Title = "CLAIM X2 NOW",
-        Icon = "lucide:zap",
+        Icon = "devil:zap",
         Justify = "Center",
         Callback = function() claimTrainingX2() end,
     })
@@ -2390,7 +2417,7 @@ local function buildWindUI()
     safeLbl = proxy(safeTab:Section({ Title = "Safe zone loading..." }), "")
     safeTab:Button({
         Title = "SET SAFE ZONE",
-        Icon = "lucide:map-pin",
+        Icon = "devil:pin",
         Justify = "Center",
         Callback = function()
             if captureSafeZone() then
@@ -2403,7 +2430,7 @@ local function buildWindUI()
     })
     safeTab:Button({
         Title = "RETURN SAFE",
-        Icon = "lucide:undo-2",
+        Icon = "devil:undo",
         Justify = "Center",
         Callback = function()
             if returnToSafe() then
@@ -2416,7 +2443,7 @@ local function buildWindUI()
 
     espBtn = proxy(visualTab:Toggle({
         Title = "ESP: OFF",
-        Icon = "lucide:eye",
+        Icon = "devil:eye",
         Value = espOn,
         Callback = function(value)
             espOn = value == true
@@ -2426,7 +2453,7 @@ local function buildWindUI()
     }), "ESP: OFF")
     visualTab:Button({
         Title = "RESCAN TARGETS",
-        Icon = "lucide:refresh-cw",
+        Icon = "devil:refresh",
         Justify = "Center",
         Callback = function()
             processed = {}
