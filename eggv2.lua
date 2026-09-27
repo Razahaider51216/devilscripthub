@@ -121,31 +121,6 @@ local collectBusy = false
 local safeCFrame = nil
 local autoDelay = 1.6
 local carryTarget = 1
-local sea = {
-    autoOn = false,
-    held = false,
-    waveNumber = 5,
-    chargeThreshold = 0.998,
-    chargeMinimum = 0.97,
-    chargeTimeout = (23.042 - 22.412) + 1.2,
-    startAfterReleaseDelay = 23.557 - 23.042,
-    finishAfterStartDelay = 35.256 - 23.557,
-    restartMinDelay = 1,
-    restartMaxDelay = 2,
-    dumpFinishedIds = {
-        "7fbe4cb9-8d3f-45e9-b7e1-81a0b8836d39",
-        "89d1e789-313e-41d7-bcf2-90d4e592be04",
-        "2eb83658-22a6-4836-9944-084daea9092f",
-    },
-    nextAttempt = 0,
-    releasedAt = 0,
-    heldAt = 0,
-    waveStartedAt = 0,
-    startBusy = false,
-    finishBusy = false,
-    finishCalled = false,
-    chargeArmed = false,
-}
 local targetCount = 0
 local collectedCount = 0
 local failedCount = 0
@@ -193,200 +168,6 @@ local function setStatus(text, color)
         statusLbl.Text = text
         statusLbl.TextColor3 = color or UI.muted
     end
-end
-
-function sea.status(text, color)
-    if sea.statusLbl then
-        sea.statusLbl.Text = text
-        sea.statusLbl.TextColor3 = color or UI.muted
-    end
-end
-
-function sea.updateButton()
-    if sea.btn then
-        sea.btn.Text = sea.autoOn and "AUTO CHARGE: ON" or "AUTO CHARGE: OFF"
-        sea.btn.TextColor3 = sea.autoOn and UI.green or UI.amber
-    end
-end
-
-function sea.getButton()
-    local touch = gui:FindFirstChild("TouchGui")
-    local controls = touch and touch:FindFirstChild("TouchControlFrame")
-    local jump = controls and controls:FindFirstChild("JumpButton")
-    local button = jump and jump:FindFirstChild("SeaStaffActionButton")
-    return button and button:IsA("GuiButton") and button or nil
-end
-
-function sea.getBar()
-    local effects = gui:FindFirstChild("Effects")
-    local charge = effects and effects:FindFirstChild("ChargeBar")
-    local frame = charge and charge:FindFirstChild("Frame")
-    local bar = frame and frame:FindFirstChild("BAR")
-    return bar and bar:IsA("GuiObject") and bar or nil
-end
-
-function sea.sendInput(down)
-    if not sea.input then return false end
-    local x, y
-    if down then
-        if not sea.button or not sea.button.Parent then return false end
-        local pos, size = sea.button.AbsolutePosition, sea.button.AbsoluteSize
-        if size.X <= 0 or size.Y <= 0 then return false end
-        x, y = math.floor(pos.X + size.X / 2), math.floor(pos.Y + size.Y / 2)
-    else
-        x, y = sea.mouseX, sea.mouseY
-        if not x then return false end
-    end
-    local ok = pcall(function()
-        sea.input:SendMouseButtonEvent(x, y, 0, down, game, 0)
-    end)
-    if ok and down then sea.mouseX, sea.mouseY = x, y end
-    if not down then sea.mouseX, sea.mouseY = nil, nil end
-    return ok
-end
-
-function sea.releaseInput()
-    if not sea.held then return end
-    sea.held = false
-    sea.heldAt = 0
-    sea.sendInput(false)
-    sea.releasedAt = os.clock()
-    sea.nextAttempt = sea.releasedAt + sea.startAfterReleaseDelay
-end
-
-function sea.cacheRemotes()
-    if sea.startRemote and sea.startRemote.Parent
-        and sea.finishRemote and sea.finishRemote.Parent
-        and sea.closedRemote and sea.closedRemote.Parent then
-        return true
-    end
-
-    local services = RS:WaitForChild("Packages", 10)
-    if not services then return false end
-    services = services:WaitForChild("_Index", 10)
-    if not services then return false end
-    services = services:WaitForChild("sleitnick_knit@1.7.0", 10)
-    if not services then return false end
-    services = services:WaitForChild("knit", 10)
-    if not services then return false end
-    services = services:WaitForChild("Services", 10)
-    if not services then return false end
-    services = services:WaitForChild("WaveService", 10)
-    if not services then return false end
-    local rf = services:WaitForChild("RF", 10)
-    local re = services:WaitForChild("RE", 10)
-    if not rf or not re then return false end
-    sea.startRemote = rf:WaitForChild("Start", 10)
-    sea.finishRemote = rf:WaitForChild("Finished", 10)
-    sea.closedRemote = re:WaitForChild("OnWaveClosed", 10)
-    return sea.startRemote and sea.startRemote:IsA("RemoteFunction")
-        and sea.finishRemote and sea.finishRemote:IsA("RemoteFunction")
-        and sea.closedRemote and sea.closedRemote:IsA("RemoteEvent")
-end
-
-function sea.restartDelay()
-    return sea.restartMinDelay + math.random() * math.max(0, sea.restartMaxDelay - sea.restartMinDelay)
-end
-
-function sea.extractFinishIds(startResult)
-    local ids = {}
-    if type(startResult) == "table" and type(startResult.spawns) == "table" then
-        local candidates = {}
-        for id, data in pairs(startResult.spawns) do
-            if type(id) == "string" then
-                table.insert(candidates, {
-                    id = id,
-                    wavePart = type(data) == "table" and tonumber(data.wavePart) or 9999,
-                    boss = type(data) == "table" and data.isBossItem == true,
-                })
-            end
-        end
-        table.sort(candidates, function(a, b)
-            if a.boss ~= b.boss then return a.boss end
-            return a.wavePart < b.wavePart
-        end)
-        for i = 1, math.min(3, #candidates) do
-            ids[i] = candidates[i].id
-        end
-    end
-    if #ids < 3 then
-        ids = {
-            sea.dumpFinishedIds[1],
-            sea.dumpFinishedIds[2],
-            sea.dumpFinishedIds[3],
-        }
-    end
-    return ids
-end
-
-function sea.startFallback()
-    if sea.startBusy or player:GetAttribute("IsWaveActive") then return end
-    if not sea.cacheRemotes() then
-        sea.status("WaveService remote unavailable", UI.amber)
-        sea.nextAttempt = os.clock() + 2
-        return
-    end
-    sea.startBusy = true
-    local ok, result = pcall(function() return sea.startRemote:InvokeServer(sea.waveNumber) end)
-    sea.startBusy = false
-    if not runtime.active or not sea.autoOn then return end
-    if ok and type(result) == "table" and result.extension == 5 then
-        sea.waveStartedAt = os.clock()
-        sea.currentFinishedIds = sea.extractFinishIds(result)
-        sea.finishCalled = false
-        sea.status("Wave started: +5s open time", UI.green)
-    else
-        sea.status("Start(" .. tostring(sea.waveNumber) .. ") did not confirm a wave", UI.amber)
-        sea.nextAttempt = os.clock() + 2
-    end
-end
-
-function sea.finishWave()
-    if sea.finishBusy or sea.finishCalled then return end
-    if not sea.cacheRemotes() then
-        sea.status("Finished remote unavailable", UI.amber)
-        return
-    end
-    local ids = sea.currentFinishedIds or sea.dumpFinishedIds
-    if type(ids) ~= "table" or #ids < 3 then return end
-    sea.finishBusy = true
-    local ok = pcall(function()
-        return sea.finishRemote:InvokeServer({ ids[1], ids[2], ids[3] })
-    end)
-    sea.finishBusy = false
-    sea.finishCalled = true
-    if ok then
-        sea.status("Finished wave; waiting to restart", UI.green)
-        sea.nextAttempt = os.clock() + sea.restartDelay()
-    else
-        sea.status("Finished call failed; waiting for wave close", UI.amber)
-    end
-end
-
-function sea.startCharge()
-    if not sea.autoOn or sea.held or player:GetAttribute("IsWaveActive") then return end
-    if not player:GetAttribute("InSeaEdge") then
-        sea.status("Move to the sea edge", UI.amber)
-        sea.nextAttempt = os.clock() + 2
-        return
-    end
-    sea.button = sea.getButton()
-    if not sea.button or not sea.button.Visible then
-        sea.status("Sea Staff button is not visible", UI.amber)
-        sea.nextAttempt = os.clock() + 2
-        return
-    end
-    if not sea.sendInput(true) then
-        sea.status("VirtualInputManager cannot press Sea Staff", UI.red)
-        sea.nextAttempt = os.clock() + 3
-        return
-    end
-    sea.held = true
-    sea.heldAt = os.clock()
-    sea.chargeArmed = false
-    sea.bar = nil
-    sea.status("Charging Sea Staff", UI.cyan)
-    sea.nextAttempt = os.clock() + 2
 end
 
 local function cleanText(value)
@@ -1426,8 +1207,6 @@ runtime.stop = function()
     runtime.active = false
     autoOn = false
     trainingX2On = false
-    sea.autoOn = false
-    sea.releaseInput()
     for _, connection in ipairs(runtime.connections) do
         connection:Disconnect()
     end
@@ -1617,7 +1396,6 @@ end
 local collectorSection = mkSection("Collector")
 local raritySection = mkSection("Filters")
 local trainingSection = mkSection("Training")
-local seaSection = mkSection("Sea")
 local safeSection = mkSection("Safe Zone")
 local visualSection = mkSection("Visual")
 
@@ -1668,7 +1446,6 @@ mkTab("Filters", 50)
 mkTab("Training", 90)
 mkTab("Safe Zone", 130)
 mkTab("Visual", 170)
-mkTab("Sea", 210)
 
 local function mkHeader(parent, title, subtitle)
     local h = Instance.new("TextLabel")
@@ -1715,24 +1492,8 @@ end
 mkHeader(collectorSection, "Auto Collector", "Collect eggs matching the selected filters")
 mkHeader(raritySection, "Egg Filters", "Selections in different groups must all match")
 mkHeader(trainingSection, "Training x2", "Auto claim the x2 training bonus when it appears")
-mkHeader(seaSection, "Sea Charge", "Release near full charge for +5s open time")
 mkHeader(safeSection, "Safe Zone", "Return point after every pickup")
 mkHeader(visualSection, "Visual", "Target ESP and scan tools")
-
-sea.statusLbl = Instance.new("TextLabel")
-sea.statusLbl.Size = UDim2.new(1, 0, 0, 46)
-sea.statusLbl.Position = UDim2.new(0, 0, 0, 62)
-sea.statusLbl.BackgroundTransparency = 1
-sea.statusLbl.Text = "Sea automation is off"
-sea.statusLbl.TextColor3 = UI.muted
-sea.statusLbl.Font = Enum.Font.Gotham
-sea.statusLbl.TextSize = 11
-sea.statusLbl.TextWrapped = true
-sea.statusLbl.TextXAlignment = Enum.TextXAlignment.Left
-sea.statusLbl.TextYAlignment = Enum.TextYAlignment.Top
-sea.statusLbl.Parent = seaSection
-sea.btn = mkBtn(seaSection, "AUTO CHARGE: OFF", UI.amber, 0, 118, 154)
-seaSection.CanvasSize = UDim2.new(0, 0, 0, 220)
 
 selectedSummaryLbl = Instance.new("TextLabel")
 selectedSummaryLbl.Size = UDim2.new(1, 0, 0, 26)
@@ -2215,19 +1976,6 @@ trainingOnceBtn.MouseButton1Click:Connect(function()
     claimTrainingX2()
 end)
 
-sea.btn.MouseButton1Click:Connect(function()
-    sea.autoOn = not sea.autoOn
-    sea.updateButton()
-    if sea.autoOn then
-        sea.nextAttempt = os.clock()
-        sea.status("Waiting for Sea Staff at the sea edge", UI.cyan)
-    else
-        sea.releaseInput()
-        sea.releasedAt = 0
-        sea.status("Sea automation stopped", UI.muted)
-    end
-end)
-
 setSafeBtn.MouseButton1Click:Connect(function()
     if captureSafeZone() then
         updateSafeLabel()
@@ -2386,7 +2134,6 @@ local function buildWindUI()
     local trainingTab = tab("Training", "lucide:dumbbell")
     local safeTab = tab("Safe Zone", "lucide:shield")
     local visualTab = tab("Visual", "lucide:eye")
-    local seaTab = tab("Sea", "lucide:waves")
 
     collectorTab:Section({ Title = "Devil Hub", Desc = "Auto egg collector" })
     if logoImage ~= "" then
@@ -2691,37 +2438,6 @@ local function buildWindUI()
     })
     visualTab:Section({ Title = "ESP marks only fresh target eggs." })
 
-    sea.statusLbl = proxy(seaTab:Section({ Title = "Sea automation is off" }), "")
-    sea.btn = proxy(seaTab:Toggle({
-        Title = "AUTO CHARGE: OFF",
-        Desc = string.format("Release at %.3f BAR for +5s", sea.chargeThreshold),
-        Icon = "lucide:waves",
-        Value = sea.autoOn,
-        Callback = function(value)
-            sea.autoOn = value == true
-            sea.updateButton()
-            if sea.autoOn then
-                sea.nextAttempt = os.clock()
-                sea.status("Waiting for Sea Staff at the sea edge", UI.cyan)
-            else
-                sea.releaseInput()
-                sea.releasedAt = 0
-                sea.status("Sea automation stopped", UI.muted)
-            end
-        end,
-    }), "AUTO CHARGE: OFF")
-    seaTab:Slider({
-        Title = "Excellent Threshold",
-        Icons = { From = "lucide:gauge", To = "lucide:badge-check" },
-        Step = 0.001,
-        Value = { Min = 0.97, Max = 1, Default = sea.chargeThreshold },
-        Callback = function(value)
-            sea.chargeThreshold = tonumber(value) or sea.chargeThreshold
-            sea.status(string.format("Excellent threshold: %.3f", sea.chargeThreshold), UI.cyan)
-        end,
-    })
-    seaTab:Section({ Title = "WaveService", Desc = "Start(5), Finished(UUID x3), OnWaveClosed auto restart" })
-
     if mainGui then
         mainGui.Enabled = false
     end
@@ -2788,63 +2504,6 @@ if not targetsOk then
     setStatus("Target scan failed; check executor output", UI.red)
 end
 hookTrainingBonusRemote()
-task.spawn(function()
-    local ok, input = pcall(function() return game:GetService("VirtualInputManager") end)
-    if ok then sea.input = input end
-    local cached = sea.cacheRemotes()
-    if not runtime.active then return end
-    if cached then
-        table.insert(runtime.connections, sea.closedRemote.OnClientEvent:Connect(function()
-            sea.releaseInput()
-            sea.releasedAt = 0
-            sea.waveStartedAt = 0
-            sea.finishCalled = false
-            sea.currentFinishedIds = nil
-            sea.nextAttempt = os.clock() + sea.restartDelay()
-            if sea.autoOn then sea.status("Wave closed; waiting to recharge", UI.muted) end
-        end))
-    else
-        sea.status("WaveService remote unavailable", UI.amber)
-    end
-end)
-
-table.insert(runtime.connections, game:GetService("RunService").Heartbeat:Connect(function()
-    if not runtime.active or not sea.autoOn or not sea.held then return end
-    if not sea.bar or not sea.bar:IsDescendantOf(gui) then sea.bar = sea.getBar() end
-    local fill = sea.bar and sea.bar.Size.Y.Scale or 0
-    if sea.bar and fill <= sea.chargeMinimum then sea.chargeArmed = true end
-    if sea.chargeArmed and fill >= sea.chargeThreshold then
-        sea.releaseInput()
-        sea.status(string.format("Released at %.3f charge", fill), UI.green)
-    elseif os.clock() - sea.heldAt > sea.chargeTimeout then
-        sea.releaseInput()
-        sea.releasedAt = 0
-        sea.status("Charge bar did not reach target", UI.amber)
-    end
-end))
-
-task.spawn(function()
-    while runtime.active do
-        if sea.autoOn and not sea.held then
-            local now = os.clock()
-            if player:GetAttribute("IsWaveActive") then
-                sea.releasedAt = 0
-                if sea.waveStartedAt > 0
-                    and not sea.finishCalled
-                    and now - sea.waveStartedAt >= sea.finishAfterStartDelay then
-                    sea.finishWave()
-                end
-            elseif sea.releasedAt > 0 and now - sea.releasedAt >= sea.startAfterReleaseDelay then
-                sea.releasedAt = 0
-                sea.startFallback()
-            elseif sea.releasedAt == 0 and now >= sea.nextAttempt then
-                sea.startCharge()
-            end
-        end
-        task.wait(0.1)
-    end
-end)
-sea.updateButton()
 if legacyAutoRunning then
     setStatus("Another egg auto is still ON. Turn it OFF in its GUI or rejoin.", UI.red)
 elseif scanOk and targetsOk then
