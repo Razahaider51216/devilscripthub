@@ -121,6 +121,31 @@ local collectBusy = false
 local safeCFrame = nil
 local autoDelay = 1.6
 local carryTarget = 1
+local sea = {
+    autoOn = false,
+    held = false,
+    waveNumber = 5,
+    chargeThreshold = 0.998,
+    chargeMinimum = 0.97,
+    chargeTimeout = (23.042 - 22.412) + 1.2,
+    startAfterReleaseDelay = 23.557 - 23.042,
+    finishAfterStartDelay = 35.256 - 23.557,
+    restartMinDelay = 1,
+    restartMaxDelay = 2,
+    dumpFinishedIds = {
+        "7fbe4cb9-8d3f-45e9-b7e1-81a0b8836d39",
+        "89d1e789-313e-41d7-bcf2-90d4e592be04",
+        "2eb83658-22a6-4836-9944-084daea9092f",
+    },
+    nextAttempt = 0,
+    releasedAt = 0,
+    heldAt = 0,
+    waveStartedAt = 0,
+    startBusy = false,
+    finishBusy = false,
+    finishCalled = false,
+    chargeArmed = false,
+}
 local targetCount = 0
 local collectedCount = 0
 local failedCount = 0
@@ -168,6 +193,200 @@ local function setStatus(text, color)
         statusLbl.Text = text
         statusLbl.TextColor3 = color or UI.muted
     end
+end
+
+function sea.status(text, color)
+    if sea.statusLbl then
+        sea.statusLbl.Text = text
+        sea.statusLbl.TextColor3 = color or UI.muted
+    end
+end
+
+function sea.updateButton()
+    if sea.btn then
+        sea.btn.Text = sea.autoOn and "AUTO CHARGE: ON" or "AUTO CHARGE: OFF"
+        sea.btn.TextColor3 = sea.autoOn and UI.green or UI.amber
+    end
+end
+
+function sea.getButton()
+    local touch = gui:FindFirstChild("TouchGui")
+    local controls = touch and touch:FindFirstChild("TouchControlFrame")
+    local jump = controls and controls:FindFirstChild("JumpButton")
+    local button = jump and jump:FindFirstChild("SeaStaffActionButton")
+    return button and button:IsA("GuiButton") and button or nil
+end
+
+function sea.getBar()
+    local effects = gui:FindFirstChild("Effects")
+    local charge = effects and effects:FindFirstChild("ChargeBar")
+    local frame = charge and charge:FindFirstChild("Frame")
+    local bar = frame and frame:FindFirstChild("BAR")
+    return bar and bar:IsA("GuiObject") and bar or nil
+end
+
+function sea.sendInput(down)
+    if not sea.input then return false end
+    local x, y
+    if down then
+        if not sea.button or not sea.button.Parent then return false end
+        local pos, size = sea.button.AbsolutePosition, sea.button.AbsoluteSize
+        if size.X <= 0 or size.Y <= 0 then return false end
+        x, y = math.floor(pos.X + size.X / 2), math.floor(pos.Y + size.Y / 2)
+    else
+        x, y = sea.mouseX, sea.mouseY
+        if not x then return false end
+    end
+    local ok = pcall(function()
+        sea.input:SendMouseButtonEvent(x, y, 0, down, game, 0)
+    end)
+    if ok and down then sea.mouseX, sea.mouseY = x, y end
+    if not down then sea.mouseX, sea.mouseY = nil, nil end
+    return ok
+end
+
+function sea.releaseInput()
+    if not sea.held then return end
+    sea.held = false
+    sea.heldAt = 0
+    sea.sendInput(false)
+    sea.releasedAt = os.clock()
+    sea.nextAttempt = sea.releasedAt + sea.startAfterReleaseDelay
+end
+
+function sea.cacheRemotes()
+    if sea.startRemote and sea.startRemote.Parent
+        and sea.finishRemote and sea.finishRemote.Parent
+        and sea.closedRemote and sea.closedRemote.Parent then
+        return true
+    end
+
+    local services = RS:WaitForChild("Packages", 10)
+    if not services then return false end
+    services = services:WaitForChild("_Index", 10)
+    if not services then return false end
+    services = services:WaitForChild("sleitnick_knit@1.7.0", 10)
+    if not services then return false end
+    services = services:WaitForChild("knit", 10)
+    if not services then return false end
+    services = services:WaitForChild("Services", 10)
+    if not services then return false end
+    services = services:WaitForChild("WaveService", 10)
+    if not services then return false end
+    local rf = services:WaitForChild("RF", 10)
+    local re = services:WaitForChild("RE", 10)
+    if not rf or not re then return false end
+    sea.startRemote = rf:WaitForChild("Start", 10)
+    sea.finishRemote = rf:WaitForChild("Finished", 10)
+    sea.closedRemote = re:WaitForChild("OnWaveClosed", 10)
+    return sea.startRemote and sea.startRemote:IsA("RemoteFunction")
+        and sea.finishRemote and sea.finishRemote:IsA("RemoteFunction")
+        and sea.closedRemote and sea.closedRemote:IsA("RemoteEvent")
+end
+
+function sea.restartDelay()
+    return sea.restartMinDelay + math.random() * math.max(0, sea.restartMaxDelay - sea.restartMinDelay)
+end
+
+function sea.extractFinishIds(startResult)
+    local ids = {}
+    if type(startResult) == "table" and type(startResult.spawns) == "table" then
+        local candidates = {}
+        for id, data in pairs(startResult.spawns) do
+            if type(id) == "string" then
+                table.insert(candidates, {
+                    id = id,
+                    wavePart = type(data) == "table" and tonumber(data.wavePart) or 9999,
+                    boss = type(data) == "table" and data.isBossItem == true,
+                })
+            end
+        end
+        table.sort(candidates, function(a, b)
+            if a.boss ~= b.boss then return a.boss end
+            return a.wavePart < b.wavePart
+        end)
+        for i = 1, math.min(3, #candidates) do
+            ids[i] = candidates[i].id
+        end
+    end
+    if #ids < 3 then
+        ids = {
+            sea.dumpFinishedIds[1],
+            sea.dumpFinishedIds[2],
+            sea.dumpFinishedIds[3],
+        }
+    end
+    return ids
+end
+
+function sea.startFallback()
+    if sea.startBusy or player:GetAttribute("IsWaveActive") then return end
+    if not sea.cacheRemotes() then
+        sea.status("WaveService remote unavailable", UI.amber)
+        sea.nextAttempt = os.clock() + 2
+        return
+    end
+    sea.startBusy = true
+    local ok, result = pcall(function() return sea.startRemote:InvokeServer(sea.waveNumber) end)
+    sea.startBusy = false
+    if not runtime.active or not sea.autoOn then return end
+    if ok and type(result) == "table" and result.extension == 5 then
+        sea.waveStartedAt = os.clock()
+        sea.currentFinishedIds = sea.extractFinishIds(result)
+        sea.finishCalled = false
+        sea.status("Wave started: +5s open time", UI.green)
+    else
+        sea.status("Start(" .. tostring(sea.waveNumber) .. ") did not confirm a wave", UI.amber)
+        sea.nextAttempt = os.clock() + 2
+    end
+end
+
+function sea.finishWave()
+    if sea.finishBusy or sea.finishCalled then return end
+    if not sea.cacheRemotes() then
+        sea.status("Finished remote unavailable", UI.amber)
+        return
+    end
+    local ids = sea.currentFinishedIds or sea.dumpFinishedIds
+    if type(ids) ~= "table" or #ids < 3 then return end
+    sea.finishBusy = true
+    local ok = pcall(function()
+        return sea.finishRemote:InvokeServer({ ids[1], ids[2], ids[3] })
+    end)
+    sea.finishBusy = false
+    sea.finishCalled = true
+    if ok then
+        sea.status("Finished wave; waiting to restart", UI.green)
+        sea.nextAttempt = os.clock() + sea.restartDelay()
+    else
+        sea.status("Finished call failed; waiting for wave close", UI.amber)
+    end
+end
+
+function sea.startCharge()
+    if not sea.autoOn or sea.held or player:GetAttribute("IsWaveActive") then return end
+    if not player:GetAttribute("InSeaEdge") then
+        sea.status("Move to the sea edge", UI.amber)
+        sea.nextAttempt = os.clock() + 2
+        return
+    end
+    sea.button = sea.getButton()
+    if not sea.button or not sea.button.Visible then
+        sea.status("Sea Staff button is not visible", UI.amber)
+        sea.nextAttempt = os.clock() + 2
+        return
+    end
+    if not sea.sendInput(true) then
+        sea.status("VirtualInputManager cannot press Sea Staff", UI.red)
+        sea.nextAttempt = os.clock() + 3
+        return
+    end
+    sea.held = true
+    sea.heldAt = os.clock()
+    sea.chargeArmed = false
+    sea.bar = nil
+    sea.status("Charging Sea Staff", UI.cyan)
+    sea.nextAttempt = os.clock() + 2
 end
 
 local function cleanText(value)
@@ -1207,10 +1426,15 @@ runtime.stop = function()
     runtime.active = false
     autoOn = false
     trainingX2On = false
+    sea.autoOn = false
+    sea.releaseInput()
     for _, connection in ipairs(runtime.connections) do
         connection:Disconnect()
     end
     clearESP()
+    if runtime.windWindow and type(runtime.windWindow.Destroy) == "function" then
+        pcall(function() runtime.windWindow:Destroy() end)
+    end
     if mainGui then mainGui:Destroy() end
 end
 
@@ -1219,7 +1443,7 @@ iconBtn.Size = UDim2.new(0, 52, 0, 52)
 iconBtn.Position = UDim2.new(0, 14, 0.5, -26)
 iconBtn.BackgroundColor3 = Color3.fromRGB(44, 101, 94)
 iconBtn.BorderSizePixel = 0
-iconBtn.Text = "EGG"
+iconBtn.Text = "DB"
 iconBtn.TextColor3 = UI.cyan
 iconBtn.TextSize = 13
 iconBtn.Font = Enum.Font.GothamBlack
@@ -1282,7 +1506,7 @@ local titleLbl = Instance.new("TextLabel")
 titleLbl.Size = UDim2.new(1, -62, 1, 0)
 titleLbl.Position = UDim2.new(0, 14, 0, 0)
 titleLbl.BackgroundTransparency = 1
-titleLbl.Text = "VANTA EGG COLLECTOR V2"
+titleLbl.Text = "DEVIL HUB"
 titleLbl.TextColor3 = UI.text
 titleLbl.Font = Enum.Font.GothamBlack
 titleLbl.TextSize = 13
@@ -1393,6 +1617,7 @@ end
 local collectorSection = mkSection("Collector")
 local raritySection = mkSection("Filters")
 local trainingSection = mkSection("Training")
+local seaSection = mkSection("Sea")
 local safeSection = mkSection("Safe Zone")
 local visualSection = mkSection("Visual")
 
@@ -1443,6 +1668,7 @@ mkTab("Filters", 50)
 mkTab("Training", 90)
 mkTab("Safe Zone", 130)
 mkTab("Visual", 170)
+mkTab("Sea", 210)
 
 local function mkHeader(parent, title, subtitle)
     local h = Instance.new("TextLabel")
@@ -1489,8 +1715,24 @@ end
 mkHeader(collectorSection, "Auto Collector", "Collect eggs matching the selected filters")
 mkHeader(raritySection, "Egg Filters", "Selections in different groups must all match")
 mkHeader(trainingSection, "Training x2", "Auto claim the x2 training bonus when it appears")
+mkHeader(seaSection, "Sea Charge", "Release near full charge for +5s open time")
 mkHeader(safeSection, "Safe Zone", "Return point after every pickup")
 mkHeader(visualSection, "Visual", "Target ESP and scan tools")
+
+sea.statusLbl = Instance.new("TextLabel")
+sea.statusLbl.Size = UDim2.new(1, 0, 0, 46)
+sea.statusLbl.Position = UDim2.new(0, 0, 0, 62)
+sea.statusLbl.BackgroundTransparency = 1
+sea.statusLbl.Text = "Sea automation is off"
+sea.statusLbl.TextColor3 = UI.muted
+sea.statusLbl.Font = Enum.Font.Gotham
+sea.statusLbl.TextSize = 11
+sea.statusLbl.TextWrapped = true
+sea.statusLbl.TextXAlignment = Enum.TextXAlignment.Left
+sea.statusLbl.TextYAlignment = Enum.TextYAlignment.Top
+sea.statusLbl.Parent = seaSection
+sea.btn = mkBtn(seaSection, "AUTO CHARGE: OFF", UI.amber, 0, 118, 154)
+seaSection.CanvasSize = UDim2.new(0, 0, 0, 220)
 
 selectedSummaryLbl = Instance.new("TextLabel")
 selectedSummaryLbl.Size = UDim2.new(1, 0, 0, 26)
@@ -1973,6 +2215,19 @@ trainingOnceBtn.MouseButton1Click:Connect(function()
     claimTrainingX2()
 end)
 
+sea.btn.MouseButton1Click:Connect(function()
+    sea.autoOn = not sea.autoOn
+    sea.updateButton()
+    if sea.autoOn then
+        sea.nextAttempt = os.clock()
+        sea.status("Waiting for Sea Staff at the sea edge", UI.cyan)
+    else
+        sea.releaseInput()
+        sea.releasedAt = 0
+        sea.status("Sea automation stopped", UI.muted)
+    end
+end)
+
 setSafeBtn.MouseButton1Click:Connect(function()
     if captureSafeZone() then
         updateSafeLabel()
@@ -2010,6 +2265,421 @@ rescanBtn.MouseButton1Click:Connect(function()
     end
     setStatus("Rescanned targets", UI.cyan)
 end)
+
+local function buildWindUI()
+    local windUrl = "https://raw.githubusercontent.com/Footagesus/WindUI/main/dist/main.lua"
+    local logoImage = runtimeEnv.DEVIL_HUB_LOGO or "https://cdn.discordapp.com/attachments/1533805406193848482/1553780694428291162/image_bwhwwogazphe1fgm8l4wad0x.png?ex=6aba7e89&is=6ab92d09&hm=b31be57abb4830ce8580994005af9928c9e83fce4d4946ef221e64c5a72f30ed&"
+    local logoIcon = logoImage ~= "" and logoImage or "lucide:flame"
+
+    local loaded, WindUI = pcall(function()
+        return loadstring(game:HttpGet(windUrl))()
+    end)
+    if not loaded or type(WindUI) ~= "table" then
+        warn("[VANTA V2] WindUI load failed:", WindUI)
+        setStatus("WindUI load failed; fallback GUI is still available", UI.amber)
+        return false
+    end
+
+    local window = WindUI:CreateWindow({
+        Title = "Devil Hub",
+        Author = "Egg Collector v2",
+        Folder = "DevilHub",
+        Icon = logoIcon,
+        IconSize = 28,
+        Size = UDim2.fromOffset(620, 540),
+        HideSearchBar = false,
+        OpenButton = {
+            Title = "Devil Hub",
+            Icon = logoIcon,
+            Enabled = true,
+            Draggable = true,
+            OnlyMobile = false,
+            CornerRadius = UDim.new(1, 0),
+            StrokeThickness = 2,
+            Color = ColorSequence.new(Color3.fromRGB(255, 70, 84), Color3.fromRGB(65, 222, 204)),
+        },
+    })
+    runtime.windWindow = window
+
+    local wind = { filterDropdown = nil, notifyBusy = false, suppressFilterCallback = false }
+    local function notify(title, content, icon)
+        if wind.notifyBusy then return end
+        wind.notifyBusy = true
+        pcall(function()
+            WindUI:Notify({
+                Title = title,
+                Content = content,
+                Icon = icon or "lucide:bell",
+                Duration = 3,
+            })
+        end)
+        task.delay(0.25, function() wind.notifyBusy = false end)
+    end
+
+    local function proxy(element, fallback)
+        local object = { _element = element, _text = fallback or "" }
+        return setmetatable(object, {
+            __index = function(t, key)
+                if key == "Text" then return rawget(t, "_text") end
+                return rawget(t, key)
+            end,
+            __newindex = function(t, key, value)
+                if key ~= "Text" then
+                    rawset(t, key, value)
+                    return
+                end
+                rawset(t, "_text", tostring(value or ""))
+                local target = rawget(t, "_element")
+                if target then
+                    pcall(function()
+                        if type(target.SetTitle) == "function" then
+                            target:SetTitle(tostring(value or ""))
+                        elseif type(target.SetDesc) == "function" then
+                            target:SetDesc(tostring(value or ""))
+                        end
+                    end)
+                end
+            end,
+        })
+    end
+
+    local function tab(title, icon)
+        return window:Tab({
+            Title = title,
+            Icon = icon,
+            IconShape = "Square",
+            Border = true,
+        })
+    end
+
+    local collectorTab = tab("Collector", "lucide:egg")
+    local filtersTab = tab("Filters", "lucide:list-filter")
+    local trainingTab = tab("Training", "lucide:dumbbell")
+    local safeTab = tab("Safe Zone", "lucide:shield")
+    local visualTab = tab("Visual", "lucide:eye")
+    local seaTab = tab("Sea", "lucide:waves")
+
+    collectorTab:Section({ Title = "Devil Hub", Desc = "Auto egg collector" })
+    if logoImage ~= "" then
+        collectorTab:Image({
+            Image = logoImage,
+            AspectRatio = "1:1",
+            Radius = 8,
+        })
+    else
+        collectorTab:Section({
+            Title = "DB",
+            Desc = "Logo asset not configured",
+        })
+    end
+
+    statusLbl = proxy(collectorTab:Section({ Title = "Ready", Desc = "Collector status" }), "Ready")
+    countLbl = proxy(collectorTab:Section({ Title = "Targets: 0 | Collected: 0 | Failed: 0" }), "")
+    autoBtn = proxy(collectorTab:Toggle({
+        Title = "AUTO COLLECT: OFF",
+        Desc = "Collect selected eggs automatically",
+        Value = autoOn,
+        Callback = function(value)
+            autoOn = value == true
+            updateAutoButton()
+            if autoOn then
+                setStatus(hasSelectedFilter() and "Auto collector running" or "Waiting for an egg filter", hasSelectedFilter() and UI.green or UI.amber)
+                autoLoop()
+            else
+                setStatus("Auto collector stopped", UI.muted)
+            end
+        end,
+    }), "AUTO COLLECT: OFF")
+    collectorTab:Button({
+        Title = "COLLECT ONCE",
+        Icon = "lucide:mouse-pointer-click",
+        Justify = "Center",
+        Callback = function()
+            if not collectBusy then runtime.collectBest() end
+        end,
+    })
+    deepScanBtn = proxy(collectorTab:Toggle({
+        Title = "LONG RANGE: ON",
+        Desc = "Scan every loaded egg, not only nearby eggs",
+        Value = longRangeOn,
+        Callback = function(value)
+            longRangeOn = value == true
+            updateDeepScanButton()
+            setStatus(longRangeOn and "Loaded map scan: all distances" or "Loaded map scan: within 250 studs", longRangeOn and UI.green or UI.muted)
+        end,
+    }), "LONG RANGE: ON")
+    collectorTab:Button({
+        Title = "RESCAN FAR",
+        Icon = "lucide:radar",
+        Justify = "Center",
+        Callback = function()
+            if not collectBusy then
+                discoverMapRarities()
+                getTargets()
+                if espOn then
+                    clearESP()
+                    scanESP()
+                end
+                setStatus("Rescanned loaded map with long range", UI.cyan)
+            end
+        end,
+    })
+    delayValueLbl = proxy(collectorTab:Section({ Title = string.format("Loop Delay: %.1fs", autoDelay) }), "")
+    collectorTab:Slider({
+        Title = "Loop Delay",
+        Step = 0.1,
+        Value = { Min = 0.6, Max = 5, Default = autoDelay },
+        Callback = function(value)
+            autoDelay = tonumber(value) or autoDelay
+            delayValueLbl.Text = string.format("Loop Delay: %.1fs", autoDelay)
+        end,
+    })
+    collectorTab:Slider({
+        Title = "Eggs Per Trip",
+        Step = 1,
+        Value = { Min = 1, Max = 6, Default = carryTarget },
+        Callback = function(value)
+            carryTarget = math.clamp(math.floor((tonumber(value) or carryTarget) + 0.5), 1, 6)
+        end,
+    })
+
+    filtersTab:Section({ Title = "Egg Filters", Desc = "Selections in different groups must all match" })
+    selectedSummaryLbl = proxy(filtersTab:Section({ Title = selectedRarityText() }), selectedRarityText())
+    filtersTab:Dropdown({
+        Title = "Filter Group",
+        Values = { "Rarity", "Egg Names", "Mutations" },
+        Value = filterMode,
+        Callback = function(value)
+            filterMode = value or "Rarity"
+            if rebuildRarityButtons then rebuildRarityButtons() end
+            updateRarityButtons()
+        end,
+    })
+    local function filterOptionsForWind()
+        local options = currentFilterOptions()
+        local values = {}
+        for _, key in ipairs(options) do
+            table.insert(values, filterMode == "Egg Names" and (EGG_NAME_LABELS[key] or key) or key)
+        end
+        return values
+    end
+    wind.filterDropdown = filtersTab:Dropdown({
+        Title = "Selected Filters",
+        Desc = "Multi-select targets",
+        Values = filterOptionsForWind(),
+        Multi = true,
+        Value = {},
+        Callback = function(values)
+            if wind.suppressFilterCallback then return end
+            local options, selected = currentFilterOptions()
+            for _, key in ipairs(options) do
+                selected[key] = false
+            end
+            if type(values) == "table" then
+                for _, value in ipairs(values) do
+                    for _, key in ipairs(options) do
+                        local label = filterMode == "Egg Names" and (EGG_NAME_LABELS[key] or key) or key
+                        if value == label or value == key then
+                            selected[key] = true
+                        end
+                    end
+                end
+            end
+            processed = {}
+            getTargets()
+            if espOn then
+                clearESP()
+                scanESP()
+            end
+            updateRarityButtons()
+            setStatus("Egg filters updated", UI.cyan)
+        end,
+    })
+    local function refreshWindFilters()
+        if wind.filterDropdown and type(wind.filterDropdown.Refresh) == "function" then
+            wind.suppressFilterCallback = true
+            pcall(function() wind.filterDropdown:Refresh(filterOptionsForWind()) end)
+            task.delay(0.15, function()
+                wind.suppressFilterCallback = false
+            end)
+        end
+        updateRarityButtons()
+    end
+    local oldRebuildRarityButtons = rebuildRarityButtons
+    rebuildRarityButtons = function()
+        if oldRebuildRarityButtons then oldRebuildRarityButtons() end
+        refreshWindFilters()
+    end
+    filtersTab:Button({
+        Title = "SELECT ALL",
+        Icon = "lucide:check-check",
+        Justify = "Center",
+        Callback = function()
+            discoverMapRarities()
+            local options, selected = currentFilterOptions()
+            for _, key in ipairs(options) do selected[key] = true end
+            processed = {}
+            getTargets()
+            if espOn then clearESP(); scanESP() end
+            refreshWindFilters()
+            setStatus("Selected all visible " .. filterMode, UI.green)
+        end,
+    })
+    filtersTab:Button({
+        Title = "HIGH RARITY",
+        Icon = "lucide:sparkles",
+        Justify = "Center",
+        Callback = function()
+            discoverMapRarities()
+            for _, rarity in ipairs(RARITY_OPTIONS) do
+                TARGET_RARITIES[rarity] = isHighRarityName(rarity) == true
+            end
+            processed = {}
+            getTargets()
+            if espOn then clearESP(); scanESP() end
+            refreshWindFilters()
+            setStatus("Selected high rarity eggs", UI.amber)
+        end,
+    })
+    rarerModeBtn = proxy(filtersTab:Toggle({
+        Title = "RARE FIRST ON",
+        Value = rareFirstOn,
+        Callback = function(value)
+            rareFirstOn = value == true
+            processed = {}
+            getTargets()
+            if espOn then clearESP(); scanESP() end
+            updateRarityButtons()
+            setStatus(rareFirstOn and "Selected eggs: rare first" or "Selected eggs: nearest first", rareFirstOn and UI.green or UI.muted)
+        end,
+    }), "RARE FIRST ON")
+    filtersTab:Button({
+        Title = "CLEAR FILTERS",
+        Icon = "lucide:x",
+        Justify = "Center",
+        Callback = function()
+            discoverMapRarities()
+            local options, selected = currentFilterOptions()
+            for _, key in ipairs(options) do selected[key] = false end
+            processed = {}
+            getTargets()
+            if espOn then clearESP(); scanESP() end
+            refreshWindFilters()
+            setStatus("Cleared " .. filterMode, UI.red)
+        end,
+    })
+
+    trainingStatusLbl = proxy(trainingTab:Section({ Title = "Tried: 0 | Failed: 0" }), "")
+    trainingBtn = proxy(trainingTab:Toggle({
+        Title = "AUTO TRAIN X2: OFF",
+        Value = trainingX2On,
+        Callback = function(value)
+            trainingX2On = value == true
+            updateTrainingButton()
+            updateTrainingStatus()
+            if trainingX2On then
+                trainingStatus("Waiting for next x2 bonus", UI.green)
+                trainingX2Loop()
+            else
+                trainingLoopGeneration = trainingLoopGeneration + 1
+                trainingStatus("Auto training x2 stopped", UI.muted)
+            end
+        end,
+    }), "AUTO TRAIN X2: OFF")
+    trainingTab:Button({
+        Title = "CLAIM X2 NOW",
+        Icon = "lucide:zap",
+        Justify = "Center",
+        Callback = function() claimTrainingX2() end,
+    })
+
+    safeLbl = proxy(safeTab:Section({ Title = "Safe zone loading..." }), "")
+    safeTab:Button({
+        Title = "SET SAFE ZONE",
+        Icon = "lucide:map-pin",
+        Justify = "Center",
+        Callback = function()
+            if captureSafeZone() then
+                updateSafeLabel()
+                setStatus("Safe zone updated", UI.green)
+            else
+                setStatus("Cannot set safe zone: character missing", UI.red)
+            end
+        end,
+    })
+    safeTab:Button({
+        Title = "RETURN SAFE",
+        Icon = "lucide:undo-2",
+        Justify = "Center",
+        Callback = function()
+            if returnToSafe() then
+                setStatus("Returned to safe zone", UI.green)
+            else
+                setStatus("Safe zone not set", UI.red)
+            end
+        end,
+    })
+
+    espBtn = proxy(visualTab:Toggle({
+        Title = "ESP: OFF",
+        Value = espOn,
+        Callback = function(value)
+            espOn = value == true
+            if espOn then scanESP() else clearESP() end
+            updateESPButton()
+        end,
+    }), "ESP: OFF")
+    visualTab:Button({
+        Title = "RESCAN TARGETS",
+        Icon = "lucide:refresh-cw",
+        Justify = "Center",
+        Callback = function()
+            processed = {}
+            discoverMapRarities()
+            getTargets()
+            if espOn then clearESP(); scanESP() end
+            setStatus("Rescanned targets", UI.cyan)
+        end,
+    })
+    visualTab:Section({ Title = "ESP marks only fresh target eggs." })
+
+    sea.statusLbl = proxy(seaTab:Section({ Title = "Sea automation is off" }), "")
+    sea.btn = proxy(seaTab:Toggle({
+        Title = "AUTO CHARGE: OFF",
+        Desc = string.format("Release at %.3f BAR for +5s", sea.chargeThreshold),
+        Value = sea.autoOn,
+        Callback = function(value)
+            sea.autoOn = value == true
+            sea.updateButton()
+            if sea.autoOn then
+                sea.nextAttempt = os.clock()
+                sea.status("Waiting for Sea Staff at the sea edge", UI.cyan)
+            else
+                sea.releaseInput()
+                sea.releasedAt = 0
+                sea.status("Sea automation stopped", UI.muted)
+            end
+        end,
+    }), "AUTO CHARGE: OFF")
+    seaTab:Slider({
+        Title = "Excellent Threshold",
+        Step = 0.001,
+        Value = { Min = 0.97, Max = 1, Default = sea.chargeThreshold },
+        Callback = function(value)
+            sea.chargeThreshold = tonumber(value) or sea.chargeThreshold
+            sea.status(string.format("Excellent threshold: %.3f", sea.chargeThreshold), UI.cyan)
+        end,
+    })
+    seaTab:Section({ Title = "WaveService", Desc = "Start(5), Finished(UUID x3), OnWaveClosed auto restart" })
+
+    if mainGui then
+        mainGui.Enabled = false
+    end
+    notify("Devil Hub", "WindUI loaded", logoIcon)
+    return true
+end
+
+buildWindUI()
 
 local descendantConnection = WS.DescendantAdded:Connect(function(inst)
     local spawnedItems = WS:FindFirstChild("SpawnedItems")
@@ -2068,6 +2738,63 @@ if not targetsOk then
     setStatus("Target scan failed; check executor output", UI.red)
 end
 hookTrainingBonusRemote()
+task.spawn(function()
+    local ok, input = pcall(function() return game:GetService("VirtualInputManager") end)
+    if ok then sea.input = input end
+    local cached = sea.cacheRemotes()
+    if not runtime.active then return end
+    if cached then
+        table.insert(runtime.connections, sea.closedRemote.OnClientEvent:Connect(function()
+            sea.releaseInput()
+            sea.releasedAt = 0
+            sea.waveStartedAt = 0
+            sea.finishCalled = false
+            sea.currentFinishedIds = nil
+            sea.nextAttempt = os.clock() + sea.restartDelay()
+            if sea.autoOn then sea.status("Wave closed; waiting to recharge", UI.muted) end
+        end))
+    else
+        sea.status("WaveService remote unavailable", UI.amber)
+    end
+end)
+
+table.insert(runtime.connections, game:GetService("RunService").Heartbeat:Connect(function()
+    if not runtime.active or not sea.autoOn or not sea.held then return end
+    if not sea.bar or not sea.bar:IsDescendantOf(gui) then sea.bar = sea.getBar() end
+    local fill = sea.bar and sea.bar.Size.Y.Scale or 0
+    if sea.bar and fill <= sea.chargeMinimum then sea.chargeArmed = true end
+    if sea.chargeArmed and fill >= sea.chargeThreshold then
+        sea.releaseInput()
+        sea.status(string.format("Released at %.3f charge", fill), UI.green)
+    elseif os.clock() - sea.heldAt > sea.chargeTimeout then
+        sea.releaseInput()
+        sea.releasedAt = 0
+        sea.status("Charge bar did not reach target", UI.amber)
+    end
+end))
+
+task.spawn(function()
+    while runtime.active do
+        if sea.autoOn and not sea.held then
+            local now = os.clock()
+            if player:GetAttribute("IsWaveActive") then
+                sea.releasedAt = 0
+                if sea.waveStartedAt > 0
+                    and not sea.finishCalled
+                    and now - sea.waveStartedAt >= sea.finishAfterStartDelay then
+                    sea.finishWave()
+                end
+            elseif sea.releasedAt > 0 and now - sea.releasedAt >= sea.startAfterReleaseDelay then
+                sea.releasedAt = 0
+                sea.startFallback()
+            elseif sea.releasedAt == 0 and now >= sea.nextAttempt then
+                sea.startCharge()
+            end
+        end
+        task.wait(0.1)
+    end
+end)
+sea.updateButton()
 if legacyAutoRunning then
     setStatus("Another egg auto is still ON. Turn it OFF in its GUI or rejoin.", UI.red)
 elseif scanOk and targetsOk then
