@@ -2120,7 +2120,7 @@ local function buildWindUI()
         window:SetBackgroundTransparency(0.3)
     end)
 
-    local wind = { filterDropdown = nil, notifyBusy = false, suppressFilterCallback = false }
+    local wind = { notifyBusy = false }
     local function notify(title, content, icon)
         if wind.notifyBusy then return end
         wind.notifyBusy = true
@@ -2171,24 +2171,10 @@ local function buildWindUI()
         })
     end
 
-    local function windTitle(value)
-        if type(value) == "table" then
-            return value.Title or value.Name or value[1] or ""
-        end
-        return tostring(value or "")
-    end
-
     local function filterModeIcon(mode)
         if mode == "Egg Names" then return "devil:egg" end
         if mode == "Mutations" then return "devil:dna" end
         return "devil:gem"
-    end
-
-    local function filterValueIcon(key)
-        if filterMode == "Egg Names" then return "devil:egg" end
-        if filterMode == "Mutations" then return "devil:sparkles" end
-        if isHighRarityName(key) then return "devil:crown" end
-        return "devil:diamond"
     end
 
     local collectorTab = tab("Collector", "devil:egg")
@@ -2296,78 +2282,112 @@ local function buildWindUI()
 
     filtersTab:Section({ Title = "Egg Filters", Desc = "Selections in different groups must all match" })
     selectedSummaryLbl = proxy(filtersTab:Section({ Title = selectedRarityText() }), selectedRarityText())
-    filtersTab:Dropdown({
-        Title = "Filter Group",
-        Icon = "devil:sliders",
-        Values = {
-            { Title = "Rarity", Icon = "devil:gem" },
-            { Title = "Egg Names", Icon = "devil:egg" },
-            { Title = "Mutations", Icon = "devil:dna" },
-        },
-        Value = { Title = filterMode, Icon = filterModeIcon(filterMode) },
-        Callback = function(value)
-            filterMode = windTitle(value)
-            if filterMode == "" then filterMode = "Rarity" end
-            if rebuildRarityButtons then rebuildRarityButtons() end
-            updateRarityButtons()
-        end,
-    })
-    local function filterOptionsForWind()
-        local options = currentFilterOptions()
-        local values = {}
+    local filterPage = 1
+    local filterQuery = ""
+    local pageSize = 8
+    local filterMatches = {}
+    local filterRows = {}
+    local modeButtons = {}
+    local filterPageLabel
+    local filterSearch
+
+    local function refreshWindFilters()
+        local options, selected = currentFilterOptions()
+        filterMatches = {}
+        local query = filterQuery:lower()
         for _, key in ipairs(options) do
             local label = filterMode == "Egg Names" and (EGG_NAME_LABELS[key] or key) or key
-            table.insert(values, {
-                Title = label,
-                Icon = filterValueIcon(key),
-            })
+            if query == "" or label:lower():find(query, 1, true) or key:lower():find(query, 1, true) then
+                table.insert(filterMatches, key)
+            end
         end
-        return values
-    end
-    wind.filterDropdown = filtersTab:Dropdown({
-        Title = "Selected Filters",
-        Desc = "Multi-select targets",
-        Icon = "devil:list",
-        Values = filterOptionsForWind(),
-        Multi = true,
-        Value = {},
-        Callback = function(values)
-            if wind.suppressFilterCallback then return end
-            local options, selected = currentFilterOptions()
-            for _, key in ipairs(options) do
-                selected[key] = false
+
+        local pageCount = math.max(1, math.ceil(#filterMatches / pageSize))
+        filterPage = math.clamp(filterPage, 1, pageCount)
+        local selectedCount = 0
+        for _, key in ipairs(options) do
+            if selected[key] then selectedCount = selectedCount + 1 end
+        end
+        if filterPageLabel then
+            filterPageLabel.Text = string.format("%d found | %d selected | Page %d/%d", #filterMatches, selectedCount, filterPage, pageCount)
+        end
+
+        for mode, button in pairs(modeButtons) do
+            button:SetTitle(mode .. (filterMode == mode and " (active)" or ""))
+        end
+        for index, button in ipairs(filterRows) do
+            local key = filterMatches[(filterPage - 1) * pageSize + index]
+            if button.ElementFrame then button.ElementFrame.Visible = key ~= nil end
+            if key then
+                local label = filterMode == "Egg Names" and (EGG_NAME_LABELS[key] or key) or key
+                button:SetTitle((selected[key] and "[x] " or "[ ] ") .. label)
             end
-            if type(values) == "table" then
-                for _, value in ipairs(values) do
-                    local picked = windTitle(value)
-                    for _, key in ipairs(options) do
-                        local label = filterMode == "Egg Names" and (EGG_NAME_LABELS[key] or key) or key
-                        if picked == label or picked == key then
-                            selected[key] = true
-                        end
-                    end
-                end
-            end
-            processed = {}
-            getTargets()
-            if espOn then
-                clearESP()
-                scanESP()
-            end
-            updateRarityButtons()
-            setStatus("Egg filters updated", UI.cyan)
-        end,
-    })
-    local function refreshWindFilters()
-        if wind.filterDropdown and type(wind.filterDropdown.Refresh) == "function" then
-            wind.suppressFilterCallback = true
-            pcall(function() wind.filterDropdown:Refresh(filterOptionsForWind()) end)
-            task.delay(0.15, function()
-                wind.suppressFilterCallback = false
-            end)
         end
         updateRarityButtons()
     end
+
+    for _, mode in ipairs({ "Rarity", "Egg Names", "Mutations" }) do
+        modeButtons[mode] = filtersTab:Button({
+            Title = mode,
+            Icon = filterModeIcon(mode),
+            Callback = function()
+                filterMode = mode
+                filterPage = 1
+                filterQuery = ""
+                if filterSearch then filterSearch:Set("") end
+                if rebuildRarityButtons then rebuildRarityButtons() end
+            end,
+        })
+    end
+
+    filterPageLabel = proxy(filtersTab:Section({ Title = "Filters" }), "Filters")
+    filterSearch = filtersTab:Input({
+        Title = "Search",
+        Placeholder = "Egg name or rarity",
+        Value = "",
+        Callback = function(value)
+            filterQuery = tostring(value or "")
+            filterPage = 1
+            refreshWindFilters()
+        end,
+    })
+
+    filtersTab:Button({
+        Title = "PREVIOUS PAGE",
+        Icon = "devil:undo",
+        Callback = function()
+            filterPage = math.max(1, filterPage - 1)
+            refreshWindFilters()
+        end,
+    })
+    filtersTab:Button({
+        Title = "NEXT PAGE",
+        Icon = "devil:play",
+        Callback = function()
+            filterPage = filterPage + 1
+            refreshWindFilters()
+        end,
+    })
+
+    for index = 1, pageSize do
+        filterRows[index] = filtersTab:Button({
+            Title = "[ ]",
+            Icon = "devil:check",
+            Callback = function()
+                local key = filterMatches[(filterPage - 1) * pageSize + index]
+                if not key then return end
+                local _, selected = currentFilterOptions()
+                selected[key] = not selected[key]
+                processed = {}
+                getTargets()
+                if espOn then clearESP(); scanESP() end
+                refreshWindFilters()
+                setStatus("Egg filters updated", UI.cyan)
+            end,
+        })
+    end
+    refreshWindFilters()
+
     local oldRebuildRarityButtons = rebuildRarityButtons
     rebuildRarityButtons = function()
         if oldRebuildRarityButtons then oldRebuildRarityButtons() end
